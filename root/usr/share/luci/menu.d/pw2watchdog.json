@@ -1,0 +1,46 @@
+{
+	"admin/services/pw2watchdog": {
+		"title": "PassWall2 Watchdog",
+		"order": 95,
+		"action": {
+			"type": "firstchild"
+		},
+		"acl": [ "luci-app-pw2watchdog" ]
+	},
+	"admin/services/pw2watchdog/overview": {
+		"title": "Overview",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "pw2watchdog/overview"
+		},
+		"acl": [ "luci-app-pw2watchdog" ]
+	},
+	"admin/services/pw2watchdog/nodes": {
+		"title": "Nodes",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "pw2watchdog/nodes"
+		},
+		"acl": [ "luci-app-pw2watchdog" ]
+	},
+	"admin/services/pw2watchdog/settings": {
+		"title": "Settings",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "pw2watchdog/settings"
+		},
+		"acl": [ "luci-app-pw2watchdog" ]
+	},
+	"admin/services/pw2watchdog/help": {
+		"title": "Help",
+		"order": 40,
+		"action": {
+			"type": "view",
+			"path": "pw2watchdog/help"
+		},
+		"acl": [ "luci-app-pw2watchdog" ]
+	}
+}

@@ -1,0 +1,6 @@
+# OpenWrt build system artifacts
+build_dir/
+staging_dir/
+*.ipk
+*.o
+*.ko

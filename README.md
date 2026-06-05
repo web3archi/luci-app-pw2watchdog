@@ -1,0 +1,278 @@
+# pw2watchdog
+
+A LuCI application for OpenWrt that monitors PassWall2 proxy nodes, automatically switches to the best available node based on latency measurements, and activates a fallback policy when all candidates fail.
+
+**Tested on:**
+- OpenWrt 23.05.5 (`ramips/mt7621`, Asus RT-AX53U)
+- PassWall2 `26.4.20`
+- Lua 5.1.5
+
+---
+
+## How it works
+
+Two background daemons run continuously under procd:
+
+**`pw2watchdog.sh daemon`** — the main watchdog loop. Every `check_interval` seconds it:
+1. Measures latency for all candidate nodes by running PassWall2's own `test.sh` through each node
+2. Finds the best candidate (lowest latency below `max_latency`)
+3. Switches PassWall2's default node (`passwall2.rulenode.default_node`) if the improvement exceeds `latency_improvement_threshold` and `min_switch_interval` has elapsed
+4. If all candidates fail — activates the fallback policy (Blackhole or Direct)
+5. Writes runtime state to `/var/run/pw2watchdog/status.json` and appends a decision record to `/var/run/pw2watchdog/history.jsonl`
+
+**`pw2watchdog-scanner.sh daemon`** — runs in parallel. Periodically scans the full PassWall2 node list and writes latency scores to `/var/run/pw2watchdog/latency_cache.json`. In `auto` node selection mode, the watchdog uses this cache to rotate the candidate pool automatically.
+
+**`pw2watchdog-env.sh`** — service discovery helper. Finds all PassWall2 paths and parameters programmatically (init script, share dir, nftables chain, fwmark, etc.) and caches the result in `/var/run/pw2watchdog/env.static`. All other scripts source this file — no hardcoded paths anywhere. Re-runs automatically if the cache is stale (TTL 1 hour) or on first boot.
+
+**`pw2watchdog-subscribe.sh`** — optional subscription auto-update helper. Updates all PassWall2 `subscribe_list` entries via `subscribe.lua` and installs/removes a cron job based on UCI settings.
+
+### Fallback policy
+
+When all candidate nodes exceed `max_latency` or fail:
+
+- **Blackhole** (recommended) — inserts a static `nft drop` rule into the PassWall2 mangle chain. Proxy traffic is dropped. No unproxied leaks. The rule is removed as soon as a healthy node is found.
+- **Direct** — does nothing. PassWall2 continues with whatever node is currently set.
+
+> The watchdog does **not** use `_blackhole` or `_direct` as PassWall2 node targets. The blackhole is implemented as a real nftables rule, independent of node switching.
+
+### Transit Blackhole
+
+During a node switch, PassWall2 briefly has no active proxy (restart in progress). The watchdog inserts the same nft drop rule before calling `passwall2 restart` and removes it after the new node is confirmed ready. This prevents traffic leaks during the switch window.
+
+---
+
+## File layout
+
+```
+/usr/bin/pw2watchdog.sh                          main watchdog daemon
+/usr/bin/pw2watchdog-scanner.sh                  latency scanner daemon
+/usr/bin/pw2watchdog-env.sh                      service discovery / env builder
+/usr/bin/pw2watchdog-subscribe.sh                subscription auto-update helper
+/etc/init.d/pw2watchdog                          procd init script
+/www/luci-static/resources/view/pw2watchdog/     LuCI views
+    overview.js                                  runtime status page
+    settings.js                                  configuration page
+    nodes.js                                     node list with latency
+    help.js                                      help page
+/usr/share/rpcd/acl.d/luci-app-pw2watchdog.json  rpcd ACL
+/var/run/pw2watchdog/                            runtime state (tmpfs, lost on reboot)
+    env.static                                   resolved paths and hw info
+    status.json                                  current watchdog state
+    history.jsonl                                decision log (one JSON per line)
+    latency_cache.json                           per-node latency from scanner
+    sub_update.json                              last subscription update result
+```
+
+---
+
+## Setup order
+
+Follow this order exactly — each step depends on the previous one.
+
+### 1. Configure PassWall2 first
+
+Before enabling the watchdog, PassWall2 must be working:
+
+1. **Services → PassWall2 → Node Subscribe** — add your subscription URL
+2. **Node Subscribe → Manual Subscribe** — update the subscription (fetch nodes)
+3. **Node list → URL Test** — test nodes, identify the best working one
+4. **Shunt Rules → Default** — set a real proxy node as the default
+5. Verify that proxy traffic actually works through PassWall2
+
+> The watchdog reads `passwall2.rulenode.default_node`. If this is empty, `_direct`, or `_blackhole`, the watchdog will not start correctly.
+
+### 2. Enable the watchdog
+
+1. **Services → PassWall2 Watchdog → Settings**
+2. Set **Enabled** = on
+3. Choose **Node selection mode**:
+   - `Auto` — watchdog picks the best N candidates from the full node pool automatically. Recommended.
+   - `Manual` — you pin specific candidates on the Nodes page.
+4. Choose **Fallback action** — `Blackhole` is strongly recommended
+5. **Save & Apply**
+
+### 3. Verify
+
+Open **Overview** — you should see:
+- Current default node and its latency
+- Best candidate node
+- Last decision reason
+
+Check logs:
+```sh
+logread | grep pw2watchdog | tail -30
+```
+
+Check env resolution:
+```sh
+pw2watchdog-env.sh check
+```
+
+---
+
+## Subscription auto-update
+
+Some PassWall2 builds do not update subscriptions automatically. The watchdog includes an optional helper for this.
+
+**Settings → Advanced settings → Subscription auto-update:**
+
+| Option | Default | Description |
+|---|---|---|
+| Subscription auto-update | off | Enable daily cron update |
+| Subscription update time | 04:00 | Daily update time (HH:MM, 24h, router local time) |
+| Update subscriptions on boot | off | Run one update after each service start |
+
+After **Save & Apply**, the cron job is installed automatically. Verify:
+```sh
+crontab -l
+pw2watchdog-subscribe.sh status
+```
+
+Manual update:
+```sh
+pw2watchdog-subscribe.sh run
+```
+
+Result is written to `/var/run/pw2watchdog/sub_update.json`. When auto-update is enabled, the **Overview** page shows the last update time.
+
+> `tr: write error: Broken pipe` in the output of `subscribe.sh run` is normal — it comes from PassWall2's internal `subscribe.lua` pipeline and does not indicate a failure. Check the exit status or `sub_update.json` instead.
+
+---
+
+## Advanced settings
+
+All fields are optional. Leave blank to use auto-detected values. Fill in only if auto-detection fails on your setup.
+
+| Field | Auto-detected from |
+|---|---|
+| PassWall2 init script | `/etc/init.d/<passwall_config>` |
+| PassWall2 test script | `$share_dir/test.sh` |
+| NFT table name | parsed from `nftables.sh` |
+| NFT chain (mangle) | live nftables state or `nftables.sh` |
+| PassWall2 tmp path | parsed from `utils.sh` |
+| NFT script path | `$share_dir/nftables.sh` |
+| Utils script path | `$share_dir/utils.sh` |
+| Firewall mark (hex) | parsed from `nftables.sh` |
+
+**Reset advanced to auto-detect** — clears all override fields. The watchdog will re-run service discovery on next cycle.
+
+If auto-detection fails (env errors > 0), the Overview will show a warning. Use `pw2watchdog-env.sh check` to diagnose, then fill in the failing fields manually.
+
+---
+
+## UCI reference
+
+```
+pw2watchdog.main=config
+  enabled                       1|0
+  passwall_config               passwall2
+  passwall_section              rulenode
+  check_interval                seconds between cycles (default 180)
+  timeout                       seconds per node test (default 4)
+  max_latency                   ms, nodes above this are dead (default 1500)
+  min_switch_interval           seconds between switches (default 600)
+  latency_improvement_threshold ms improvement required to switch (default 80)
+  test_url                      URL for latency measurement
+  node_selection                auto|manual
+  fallback_action               blackhole|direct
+  candidate_node                list of node IDs (manual mode)
+  exclude_node                  list of node IDs always excluded
+
+pw2watchdog.advanced=config
+  init_script                   override: PassWall2 init script path
+  test_script                   override: test.sh path
+  nftable_name                  override: nftables table name
+  nftchain_mangle               override: nftables mangle chain name
+  tmp_path                      override: PassWall2 tmp dir
+  nftables_script               override: nftables.sh path
+  utils_script                  override: utils.sh path
+  fwmark                        override: fwmark hex value
+  sub_auto_update               1|0
+  sub_update_time               HH:MM
+  sub_update_on_boot            1|0
+```
+
+---
+
+## Runtime files
+
+All runtime files live in `/var/run/pw2watchdog/` (tmpfs — lost on reboot, recreated automatically).
+
+**`status.json`** — updated after every watchdog cycle:
+```json
+{
+  "current_node": "xS95Tzji",
+  "current_latency": 142,
+  "best_node": "n1mlBLGP",
+  "best_latency": 98,
+  "last_reason": "best_latency",
+  "last_switch": 1780238055,
+  "candidate_count": 3,
+  "recommended_candidates": 3,
+  "cpu_model": "MIPS 1004Kc V2.15",
+  "running": false
+}
+```
+
+**`history.jsonl`** — one JSON object per line, newest events appended:
+```json
+{"ts":1780358023,"action":"switch","node":"n1mlBLGP","reason":"best_latency"}
+```
+
+**`sub_update.json`** — written by `pw2watchdog-subscribe.sh run`:
+```json
+{"ts":1780667833,"subs_updated":1,"result":"ok"}
+```
+
+---
+
+## Diagnostics
+
+```sh
+# Service status
+/etc/init.d/pw2watchdog status
+
+# Live logs
+logread | grep pw2watchdog | tail -30
+
+# Env check (paths, hw info, live proxy port)
+pw2watchdog-env.sh check
+
+# Force env re-detection (after PassWall2 update etc.)
+pw2watchdog-env.sh resolve --force
+
+# Manual watchdog cycle
+pw2watchdog.sh run
+
+# Subscription update status
+pw2watchdog-subscribe.sh status
+
+# Manual subscription update
+pw2watchdog-subscribe.sh run
+
+# Check cron hooks
+crontab -l
+```
+
+---
+
+## ACL
+
+The file `/usr/share/rpcd/acl.d/luci-app-pw2watchdog.json` grants the LuCI frontend read access to runtime files. If you add new runtime files that the UI needs to read, add them here and run `/etc/init.d/rpcd restart`.
+
+---
+
+## Known limitations and notes
+
+- **Candidate count** — on MT7621 with default settings (`check_interval=180`, `timeout=4`) the recommended maximum is 3 candidates. More candidates mean the scanner may not finish within one interval, causing stale latency data. The Overview page warns if you exceed the recommended count.
+- **Transit Blackhole requires working env** — if `pw2watchdog-env.sh` reports errors (nftables chain not found, fwmark missing), Transit Blackhole is silently disabled. Fix env errors first via Advanced Settings overrides.
+- **`sub_update_on_boot`** — runs `subscribe.lua` in the background a few seconds after service start. If PassWall2 is not yet ready at that moment, the update may partially fail. Check `sub_update.json` result field.
+- **Broken pipe from subscribe.lua** — `tr: write error: Broken pipe` is a known cosmetic issue in PassWall2's subscribe pipeline. It does not affect the result.
+- **UCI ACL** — `/usr/share/rpcd/acl.d/luci-app-pw2watchdog.json` must include all runtime files the LuCI frontend reads. Missing entries cause 403 errors in the browser console and silent empty data in the UI.
+- **env.static TTL** — env is cached for 1 hour. After updating PassWall2 or changing Advanced Settings overrides, run `pw2watchdog-env.sh resolve --force` to force a refresh before the next watchdog cycle.
+
+---
+
+## Localization
+
+All user-facing strings in JS views are wrapped in `_('...')` (LuCI i18n). Shell script comments and log messages are in English. A `.po`/`.pot` translation workflow is planned.

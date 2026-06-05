@@ -1,0 +1,18 @@
+{
+	"luci-app-pw2watchdog": {
+		"description": "Grant access to PassWall2 Watchdog UI",
+		"read": {
+			"uci": [ "pw2watchdog", "passwall2" ],
+			"file": {
+				"/var/run/pw2watchdog/status.json":        [ "read" ],
+				"/var/run/pw2watchdog/latency_cache.json": [ "read" ],
+				"/var/run/pw2watchdog/history.jsonl":      [ "read" ],
+				"/var/run/pw2watchdog/sub_update.json":    [ "read" ],
+				"/etc/config/pw2watchdog":                 [ "read" ]
+			}
+		},
+		"write": {
+			"uci": [ "pw2watchdog" ]
+		}
+	}
+}

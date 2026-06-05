@@ -1,0 +1,32 @@
+#!/bin/sh
+# pw2watchdog uci-defaults — runs once after package install
+# Creates UCI sections with defaults if they do not exist yet.
+
+if ! uci -q get pw2watchdog.main > /dev/null 2>&1; then
+	uci batch <<-EOF
+		set pw2watchdog.main=config
+		set pw2watchdog.main.enabled=0
+		set pw2watchdog.main.passwall_config=passwall2
+		set pw2watchdog.main.passwall_section=rulenode
+		set pw2watchdog.main.check_interval=180
+		set pw2watchdog.main.timeout=4
+		set pw2watchdog.main.max_latency=1500
+		set pw2watchdog.main.min_switch_interval=600
+		set pw2watchdog.main.latency_improvement_threshold=80
+		set pw2watchdog.main.test_url=https://cp.cloudflare.com/generate_204
+		set pw2watchdog.main.node_selection=auto
+		set pw2watchdog.main.fallback_action=blackhole
+	EOF
+fi
+
+if ! uci -q get pw2watchdog.advanced > /dev/null 2>&1; then
+	uci batch <<-EOF
+		set pw2watchdog.advanced=config
+		set pw2watchdog.advanced.sub_auto_update=0
+		set pw2watchdog.advanced.sub_update_time=04:00
+		set pw2watchdog.advanced.sub_update_on_boot=0
+	EOF
+fi
+
+uci commit pw2watchdog
+exit 0
