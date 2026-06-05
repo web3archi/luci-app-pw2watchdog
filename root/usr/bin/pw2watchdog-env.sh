@@ -1,34 +1,34 @@
 #!/bin/sh
-# pw2watchdog-env.sh — service discovery для pw2watchdog
+# pw2watchdog-env.sh — service discovery for pw2watchdog
 #
-# Находит все пути и параметры PassWall2/OpenWrt программно.
-# При неудаче читает UCI-оверрайды из pw2watchdog.advanced.
-# Результат сохраняет в /var/run/pw2watchdog/env.static
+# Finds all PassWall2/OpenWrt paths and parameters programmatically.
+# Falls back to UCI overrides from pw2watchdog.advanced on failure.
+# Saves the result to /var/run/pw2watchdog/env.static
 #
-# Использование:
-#   pw2watchdog-env.sh resolve          — найти и сохранить (идемпотентно, TTL)
-#   pw2watchdog-env.sh resolve --force  — принудительный пересчёт
-#   pw2watchdog-env.sh check            — проверить текущий env, вывести статус
-#   pw2watchdog-env.sh get <VAR>        — получить одну переменную из env
+# Usage:
+#   pw2watchdog-env.sh resolve          — resolve and save (idempotent, TTL-based)
+#   pw2watchdog-env.sh resolve --force  — force re-resolution
+#   pw2watchdog-env.sh check            — show current env status
+#   pw2watchdog-env.sh get <VAR>        — print a single variable from env
 #
-# Другие скрипты подключают результат так:
+# Other scripts source the result like this:
 #   . /var/run/pw2watchdog/env.static || exit 1
 #
-# Динамические данные (меняются при каждом passwall2 restart):
-#   pw2_get_tproxy_port   — актуальный tproxy-порт из passwall2/var
-#   pw2_is_proxy_ready    — порт реально слушает прямо сейчас
-#   pw2_wait_proxy_ready  — ждать готовности с таймаутом
+# Dynamic helpers (change on every passwall2 restart — not cached):
+#   pw2_get_tproxy_port   — current tproxy port from passwall2 var file
+#   pw2_is_proxy_ready    — check if the port is actually listening right now
+#   pw2_wait_proxy_ready  — wait for proxy to become ready with timeout
 
 CONFIG_NAME="pw2watchdog"
 STATE_DIR="/var/run/pw2watchdog"
 ENV_FILE="$STATE_DIR/env.static"
-ENV_TTL=3600   # секунд: не пересчитывать чаще раза в час
+ENV_TTL=3600   # seconds: skip re-resolution if env is fresher than this
 
 log() { logger -t pw2watchdog-env "$*"; }
 err() { logger -t pw2watchdog-env "ERROR: $*"; }
 
 # ---------------------------------------------------------------------------
-# UCI-оверрайды (Advanced Settings в LuCI)
+# UCI overrides (Advanced Settings in LuCI)
 # ---------------------------------------------------------------------------
 load_uci_overrides() {
 	. /lib/functions.sh
@@ -45,7 +45,7 @@ load_uci_overrides() {
 }
 
 # ---------------------------------------------------------------------------
-# Хелперы: поиск файлов и параметров
+# Discovery helpers
 # ---------------------------------------------------------------------------
 
 find_init_script() {
@@ -115,12 +115,12 @@ find_nftchain_mangle() {
 	local nftable="$1" nft_script="$2"
 	local chain
 
-	# Из живого состояния nftables — самый точный источник
+	# Live nftables state — most accurate source
 	chain="$(nft list table $nftable 2>/dev/null \
 		| awk '/chain PSW/{c=$2} /tproxy/{if(c!~/V6/) print c; exit}')"
 	[ -n "$chain" ] && { echo "$chain"; return 0; }
 
-	# Из скрипта
+	# Fall back to parsing the nftables script
 	chain="$(grep -m1 'PSW.*MANGLE[^_V6]' "$nft_script" 2>/dev/null \
 		| grep -oE 'PSW[0-9A-Z_]+MANGLE' | grep -v V6 | head -1)"
 	[ -n "$chain" ] && { echo "$chain"; return 0; }
@@ -129,12 +129,11 @@ find_nftchain_mangle() {
 }
 
 # ---------------------------------------------------------------------------
-# Аппаратные параметры и рекомендации
-# Выносим сюда из pw2watchdog.sh — единое место для hw-данных
+# Hardware info and recommended candidate count
 # ---------------------------------------------------------------------------
 collect_hw_info() {
-	local check_interval="$1"   # секунд
-	local timeout_per_node="$2" # секунд
+	local check_interval="$1"    # seconds
+	local timeout_per_node="$2"  # seconds
 
 	HW_CPU_THREADS="$(grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 1)"
 
@@ -142,31 +141,34 @@ collect_hw_info() {
 		| sed 's/.*: *//' | tr -d '\n')"
 	[ -n "$HW_CPU_MODEL" ] || HW_CPU_MODEL="unknown"
 
-	# RAM: MemTotal из /proc/meminfo, в МБ
+	# RAM from /proc/meminfo, in MB
 	HW_RAM_TOTAL_KB="$(awk '/^MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
 	HW_RAM_FREE_KB="$(awk '/^MemAvailable/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
 	HW_RAM_TOTAL_MB=$(( HW_RAM_TOTAL_KB / 1024 ))
 	HW_RAM_FREE_MB=$(( HW_RAM_FREE_KB / 1024 ))
 
-	# Рекомендованное количество кандидатов
-	# Формула: floor(check_interval * 0.6 / (timeout_per_node + 2)), min=2, max=20
-	local per_node_sec recommended
-	per_node_sec=$(( (timeout_per_node > 0 ? timeout_per_node : 4) + 2 ))
-	recommended=$(( (check_interval * 6) / (per_node_sec * 10) ))
+	# Recommended candidate count.
+	# Real measured overhead on MT7621: ~9x the configured timeout per node.
+	# (e.g. timeout=4s → ~36s per node including PassWall2 restart overhead)
+	# Formula: floor(check_interval * 0.6 / (timeout * 9)), min=2, max=10
+	local t real_per_node recommended
+	t=$(( timeout_per_node > 0 ? timeout_per_node : 4 ))
+	real_per_node=$(( t * 9 ))
+	recommended=$(( (check_interval * 6) / (real_per_node * 10) ))
 	[ "$recommended" -lt 2  ] && recommended=2
-	[ "$recommended" -gt 20 ] && recommended=20
+	[ "$recommended" -gt 10 ] && recommended=10
 	HW_RECOMMENDED_CANDIDATES="$recommended"
 }
 
 # ---------------------------------------------------------------------------
-# Основной резолвер
+# Main resolver
 # ---------------------------------------------------------------------------
 resolve() {
 	local errors=0 warnings=0
 
 	load_uci_overrides
 
-	# Имя конфига PassWall2
+	# PassWall2 config name
 	PASSWALL_CONFIG="${OVR_PASSWALL_CONFIG:-}"
 	if [ -z "$PASSWALL_CONFIG" ]; then
 		. /lib/functions.sh
@@ -273,14 +275,14 @@ resolve() {
 		log "nftchain_mangle=$nftchain_mangle"
 	fi
 
-	# ── 10. Аппаратные параметры ─────────────────────────────────────────
+	# ── 10. Hardware info ────────────────────────────────────────────────
 	local check_interval timeout_per_node
-	config_get check_interval  main check_interval '180'
-	config_get timeout_per_node main timeout       '4'
+	config_get check_interval   main check_interval '180'
+	config_get timeout_per_node main timeout        '4'
 	collect_hw_info "$check_interval" "$timeout_per_node"
 	log "hw: cpu_model=$HW_CPU_MODEL threads=$HW_CPU_THREADS ram=${HW_RAM_TOTAL_MB}MB recommended_candidates=$HW_RECOMMENDED_CANDIDATES"
 
-	# ── Итог ─────────────────────────────────────────────────────────────
+	# ── Write env.static ─────────────────────────────────────────────────
 	mkdir -p "$STATE_DIR"
 
 	cat > "$ENV_FILE" <<ENVEOF
@@ -319,13 +321,12 @@ ENVEOF
 }
 
 # ---------------------------------------------------------------------------
-# Динамические функции (не кешируются — вызываются по месту)
+# Dynamic helpers (not cached — call on demand)
 # ---------------------------------------------------------------------------
 
-# Актуальный tproxy-порт из живого var-файла PassWall2
+# Current tproxy port from PassWall2 var file
 pw2_get_tproxy_port() {
 	local tmp_path var_file
-	# Берём PW2_TMP_PATH из уже загруженного env или из файла
 	tmp_path="${PW2_TMP_PATH:-}"
 	if [ -z "$tmp_path" ] && [ -f "$ENV_FILE" ]; then
 		tmp_path="$(grep '^PW2_TMP_PATH=' "$ENV_FILE" | head -1 \
@@ -340,37 +341,35 @@ pw2_get_tproxy_port() {
 		| sed "s/^ACL_GLOBAL_redir_port=//;s/[\"']//g"
 }
 
-# Проверка что proxy реально слушает tproxy-порт (UDP, IPv4 и IPv6)
-# PassWall2/xray слушает UDP на :::PORT (dual-stack), не TCP
+# Check if the proxy is actually listening on the tproxy port (UDP)
+# PassWall2/xray listens on UDP :::PORT (dual-stack), not TCP
 pw2_is_proxy_ready() {
 	local port
 	port="$(pw2_get_tproxy_port)"
 	[ -n "$port" ] || return 1
 
-	# Проверяем через /proc/net/udp6 и /proc/net/udp
-	# Порт в hex, little-endian в udp/udp6
 	local hex_port
 	hex_port="$(printf '%04X' "$port")"
 
-	# /proc/net/udp6 — слушающий сокет имеет remote addr 00000000
+	# /proc/net/udp6 — listening socket has remote addr 00000000
 	grep -qi "^[[:space:]]*[0-9]*: [0-9A-F]*:${hex_port} 00000000" \
 		/proc/net/udp6 2>/dev/null && return 0
 
-	# /proc/net/udp — IPv4
+	# /proc/net/udp — IPv4 fallback
 	grep -qi "^[[:space:]]*[0-9]*: [0-9A-F]*:${hex_port} 00000000" \
 		/proc/net/udp 2>/dev/null && return 0
 
 	return 1
 }
 
-# Ждать готовности proxy после passwall2 restart
+# Wait for proxy to become ready after passwall2 restart
 # pw2_wait_proxy_ready [timeout_seconds]
-# Возвращает 0 если поднялся, 1 если таймаут
+# Returns 0 if ready, 1 if timed out
 pw2_wait_proxy_ready() {
 	local timeout="${1:-60}"
 	local elapsed=0
 
-	# Начальная пауза — процесс не может стартовать мгновенно
+	# Initial delay — process cannot start instantly
 	sleep 2
 
 	while [ "$elapsed" -lt "$timeout" ]; do
@@ -383,7 +382,7 @@ pw2_wait_proxy_ready() {
 }
 
 # ---------------------------------------------------------------------------
-# check — читаемый статус env + live-данные
+# check — human-readable env status + live data
 # ---------------------------------------------------------------------------
 cmd_check() {
 	if [ ! -f "$ENV_FILE" ]; then
@@ -436,10 +435,8 @@ cmd_check() {
 }
 
 # ---------------------------------------------------------------------------
-# Entry point — не выполняется при source (. pw2watchdog-env.sh)
+# Entry point — skipped when sourced (. pw2watchdog-env.sh)
 # ---------------------------------------------------------------------------
-# При source скрипта $0 будет именем родительского скрипта, а не нашим.
-# Проверяем явно: если скрипт вызван напрямую — обрабатываем аргументы.
 _self="$(basename "$0")"
 [ "$_self" = "pw2watchdog-env.sh" ] || return 0
 

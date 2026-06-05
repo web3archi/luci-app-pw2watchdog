@@ -79,12 +79,10 @@ function renderExcessBanner(currentCount, recommendedCount) {
 		'style': 'padding:12px 14px;border:1px solid #f1b0b7;background:#fff5f5;' +
 		         'color:#842029;border-radius:4px;margin-bottom:1em;'
 	}, [
-		E('strong', _('Too many candidate nodes for this device.')),
+		E('strong', _('Too many candidate nodes.')),
 		E('div', { 'style': 'margin-top:4px;' },
-			_('You have selected %d candidate nodes, but the recommended maximum for your ' +
-			  'device is %d. With too many candidates the watchdog may not finish measuring ' +
-			  'all nodes within one check interval, causing delayed or missed switching decisions. ' +
-			  'Go to the Nodes page and uncheck some candidates.')
+			_('You have %d candidates selected, but the recommended maximum for this device is %d. ' +
+			  'Reduce the number of candidates, or switch to Auto mode in Settings.')
 			.format(currentCount, recommendedCount)
 		)
 	]);
@@ -102,7 +100,7 @@ function renderHwBadges(status) {
 	if (!recommended) return null;
 
 	var level;
-	if (recommended >= 8)      level = 'strong';
+	if (recommended >= 6)      level = 'strong';
 	else if (recommended >= 4) level = 'medium';
 	else                       level = 'weak';
 
@@ -128,10 +126,6 @@ function renderHwBadges(status) {
 			makeBox('#856404','#fff3cd','#ffe08a', _('Medium'),   level === 'medium'),
 			makeBox('#1a7f3c','#d4edda','#b7e3c1', _('Powerful'), level === 'strong')
 		]),
-		E('div', { 'style': 'font-size:0.85em;color:#666;' },
-			_('Recommended max candidates for your device: %d ' +
-			  '(based on CPU threads, check_interval and timeout)').format(recommended)
-		)
 	]);
 }
 
@@ -414,6 +408,16 @@ return view.extend({
 				_('auto: watchdog rotates candidates automatically; manual: you pick candidates on the Nodes page.')
 			));
 
+			/* Recommended max candidates */
+			var recMax = parseInt(obj.recommended_candidates || 0);
+			if (recMax > 0) {
+				runtimeTable.appendChild(makeRow(
+					_('Recommended max candidates'),
+					makeSimpleValue(String(recMax)),
+					_('Based on check_interval and measured per-node overhead on this device.')
+				));
+			}
+
 			/* Active candidates */
 			var candidateCountLive = obj.candidate_count || liveCandidates.length || 0;
 			runtimeTable.appendChild(makeRow(
@@ -536,6 +540,15 @@ return view.extend({
 				renderRuntime(obj);
 				renderHistory(parseHistory(res[1] || ''));
 				if (subAutoUpdate === '1') renderSubState(subObj);
+				/* Update excess banner — only relevant in manual mode */
+				if (nodeSelectionMode === 'manual') {
+					excessBannerContainer.innerHTML = '';
+					var freshExcess = renderExcessBanner(
+						parseInt(obj.candidate_count || 0),
+						parseInt(obj.recommended_candidates || 0)
+					);
+					if (freshExcess) excessBannerContainer.appendChild(freshExcess);
+				}
 			}).catch(function() {
 				renderRuntime({});
 				renderHistory([]);
@@ -546,8 +559,13 @@ return view.extend({
 		var runningBanner = renderRunningBanner();
 		startRunningPoller(runningBanner);
 
-		/* Excess candidates banner */
-		var excessBanner = renderExcessBanner(candidateCount, recommendedCandidates);
+		/* Excess candidates banner — shown only in manual node selection mode */
+		var excessBannerContainer = E('div', { 'id': 'pw2-excess-container' });
+		var nodeSelectionMode = uci.get('pw2watchdog', 'main', 'node_selection') || 'auto';
+		if (nodeSelectionMode === 'manual') {
+			var excessBanner = renderExcessBanner(candidateCount, recommendedCandidates);
+			if (excessBanner) excessBannerContainer.appendChild(excessBanner);
+		}
 
 		/* Device performance block */
 		var hwBadges = renderHwBadges(status);
@@ -584,7 +602,7 @@ return view.extend({
 
 		var root = E('div', {}, [
 			runningBanner,
-			excessBanner || '',
+			excessBannerContainer,
 			E('div', { 'class': 'cbi-map' }, [
 				E('h2', _('PassWall2 Watchdog')),
 				E('div', { 'class': 'cbi-map-descr' },

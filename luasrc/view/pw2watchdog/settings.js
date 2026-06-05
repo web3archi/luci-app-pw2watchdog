@@ -124,10 +124,10 @@ function renderExcessBanner(currentCount, recommendedCount) {
 		'style': 'padding:12px 14px;border:1px solid #f1b0b7;background:#fff5f5;' +
 		         'color:#842029;border-radius:4px;margin-bottom:1em;'
 	}, [
-		E('strong', _('Too many candidate nodes for this device.')),
+		E('strong', _('Too many candidate nodes.')),
 		E('div', { 'style': 'margin-top:4px;' },
 			_('You have %d candidates selected, but the recommended maximum for this device is %d. ' +
-			  'Go to the Nodes page and uncheck some candidates, or switch to Auto mode.')
+			  'Reduce the number of candidates, or switch to Auto mode in Settings.')
 			.format(currentCount, recommendedCount)
 		)
 	]);
@@ -435,7 +435,8 @@ return view.extend({
 				mapEl.insertBefore(banner, mapEl.firstChild);
 			startRunningPoller(banner);
 
-			var excess = renderExcessBanner(candidateCount, recommendedCandidates);
+			var nodeSelMode = uci.get('pw2watchdog', 'main', 'node_selection') || 'auto';
+			var excess = nodeSelMode === 'manual' ? renderExcessBanner(candidateCount, recommendedCandidates) : null;
 			if (excess) {
 				if (banner.parentNode)
 					banner.parentNode.insertBefore(excess, banner.nextSibling);

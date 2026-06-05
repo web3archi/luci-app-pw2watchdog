@@ -269,6 +269,7 @@ The file `/usr/share/rpcd/acl.d/luci-app-pw2watchdog.json` grants the LuCI front
 - **`sub_update_on_boot`** — runs `subscribe.lua` in the background a few seconds after service start. If PassWall2 is not yet ready at that moment, the update may partially fail. Check `sub_update.json` result field.
 - **Broken pipe from subscribe.lua** — `tr: write error: Broken pipe` is a known cosmetic issue in PassWall2's subscribe pipeline. It does not affect the result.
 - **UCI ACL** — `/usr/share/rpcd/acl.d/luci-app-pw2watchdog.json` must include all runtime files the LuCI frontend reads. Missing entries cause 403 errors in the browser console and silent empty data in the UI.
+- **Boot delay** — after router reboot, PassWall2 needs time to fully initialize before the watchdog can test nodes. If you run a manual cycle or URL Test immediately after boot, nodes will time out. Wait 30–60 seconds after PassWall2 appears online before testing. The watchdog handles this automatically via `pw2_wait_proxy_ready` on service start.
 - **env.static TTL** — env is cached for 1 hour. After updating PassWall2 or changing Advanced Settings overrides, run `pw2watchdog-env.sh resolve --force` to force a refresh before the next watchdog cycle.
 
 ---

@@ -129,21 +129,21 @@ rotate_candidates_if_auto() {
 	[ "${NODE_SELECTION:-auto}" = "auto" ] || return 0
 	[ -f "$CACHE_FILE" ] || { log "rotate: no cache file"; return 1; }
 
-	# Calculate recommended: first check UCI (calc may not be running),
-	# otherwise compute using the formula from watchdog.
+	# Get recommended candidate count from env.static (computed by pw2watchdog-env.sh).
+	# Fall back to formula if env is not available yet.
 	local recommended
-	recommended="$(uci -q get ${CONFIG_NAME}.main.recommended_candidates 2>/dev/null)"
+	recommended="${HW_RECOMMENDED_CANDIDATES:-}"
 	if [ -z "$recommended" ] || [ "$recommended" -lt 1 ]; then
-		local timeout check_interval per_node_sec
+		local timeout check_interval t real_per_node
 		timeout="$(uci -q get ${CONFIG_NAME}.main.timeout 2>/dev/null)"
 		check_interval="$(uci -q get ${CONFIG_NAME}.main.check_interval 2>/dev/null)"
-		timeout="${timeout:-4}"
+		t="${timeout:-4}"
 		check_interval="${check_interval:-180}"
-		per_node_sec=$((timeout + 2))
-		[ "$per_node_sec" -lt 1 ] && per_node_sec=1
-		recommended=$(( (check_interval * 6) / (per_node_sec * 10) ))
+		real_per_node=$(( t * 9 ))
+		[ "$real_per_node" -lt 1 ] && real_per_node=36
+		recommended=$(( (check_interval * 6) / (real_per_node * 10) ))
 		[ "$recommended" -lt 2  ] && recommended=2
-		[ "$recommended" -gt 20 ] && recommended=20
+		[ "$recommended" -gt 10 ] && recommended=10
 	fi
 
 	# Parse cache: live nodes, sort by latency, take top N.

@@ -95,10 +95,8 @@ function buildNodeList() {
 /* ------------------------------------------------------------------ *
  *  Latency badge + manual test
  * ------------------------------------------------------------------ */
-function renderLatencyBadge(nodeId, cache) {
-	if (!cache || !cache[nodeId])
-		return E('span', { 'style': 'color:#aaa;font-size:0.85em;' }, '-');
-	var entry   = cache[nodeId];
+function latencyBadgeContent(entry) {
+	if (!entry) return { el: E('span', { 'style': 'color:#aaa;font-size:0.85em;' }, '-') };
 	var latency = entry.latency || 0;
 	var status  = entry.status  || 'red';
 	var color, bg;
@@ -110,6 +108,38 @@ function renderLatencyBadge(nodeId, cache) {
 		'style': 'display:inline-block;padding:2px 7px;border-radius:10px;font-size:0.82em;' +
 		         'font-weight:600;background:' + bg + ';color:' + color + ';white-space:nowrap;'
 	}, text);
+}
+
+function renderLatencyBadge(nodeId, cache) {
+	return E('span', { 'id': 'pw2-lat-' + nodeId },
+		[ latencyBadgeContent(cache ? cache[nodeId] : null) ]
+	);
+}
+
+function renderCheckedCell(nodeId, cache) {
+	var ts  = cache && cache[nodeId] ? Number(cache[nodeId].ts || 0) : 0;
+	var txt = ts > 0 ? new Date(ts * 1000).toLocaleTimeString() : '-';
+	return E('span', {
+		'id':    'pw2-chk-' + nodeId,
+		'style': 'color:#666;font-size:0.82em;'
+	}, txt);
+}
+
+/* Update latency + checked cells for all nodes from a fresh cache object */
+function applyLatencyCache(newCache) {
+	if (!newCache) return;
+	Object.keys(newCache).forEach(function(nodeId) {
+		var latEl = document.getElementById('pw2-lat-' + nodeId);
+		if (latEl) {
+			latEl.innerHTML = '';
+			latEl.appendChild(latencyBadgeContent(newCache[nodeId]));
+		}
+		var chkEl = document.getElementById('pw2-chk-' + nodeId);
+		if (chkEl) {
+			var ts  = Number(newCache[nodeId].ts || 0);
+			chkEl.textContent = ts > 0 ? new Date(ts * 1000).toLocaleTimeString() : '-';
+		}
+	});
 }
 
 function testNode(nodeId, cell) {
@@ -169,17 +199,28 @@ function renderRunningBanner() {
 }
 
 function startRunningPoller(bannerEl) {
+	var wasRunning = false;
 	function poll() {
 		fs.read('/var/run/pw2watchdog/status.json').then(function(raw) {
 			var st = {};
 			try { st = JSON.parse(raw || '{}'); } catch(e) {}
-			if (st.running === 'true' || st.running === true) {
+			var running = (st.running === 'true' || st.running === true);
+			if (running) {
 				bannerEl.style.display = '';
+				wasRunning = true;
 				setTimeout(poll, 3000);
 			} else {
 				bannerEl.style.display = 'none';
+				/* Cycle just finished — refresh latency column */
+				if (wasRunning) {
+					wasRunning = false;
+					fs.read('/var/run/pw2watchdog/latency_cache.json').then(function(d) {
+						try { applyLatencyCache(JSON.parse(d || '{}')); } catch(e) {}
+					}).catch(function() {});
+				}
+				setTimeout(poll, 5000);
 			}
-		}).catch(function() { bannerEl.style.display = 'none'; });
+		}).catch(function() { bannerEl.style.display = 'none'; setTimeout(poll, 5000); });
 	}
 	poll();
 }
@@ -192,11 +233,10 @@ function renderExcessBanner(currentCount, recommendedCount) {
 	return E('div', {
 		'style': 'padding:12px 14px;border:1px solid #f1b0b7;background:#fff5f5;color:#842029;border-radius:4px;margin-bottom:1em;'
 	}, [
-		E('strong', _('Too many candidate nodes for this device.')),
+		E('strong', _('Too many candidate nodes.')),
 		E('div', { 'style': 'margin-top:4px;' },
-			_('You have %d candidates, but the recommended maximum is %d. ' +
-			  'The watchdog may not finish measuring all nodes within one check interval. ' +
-			  'Uncheck some candidates, or switch to Auto mode in Settings.')
+			_('You have %d candidates selected, but the recommended maximum for this device is %d. ' +
+			  'Reduce the number of candidates, or switch to Auto mode in Settings.')
 			.format(currentCount, recommendedCount)
 		)
 	]);
@@ -236,13 +276,11 @@ var NodeTable = form.Value.extend({
 		}
 
 		function updateExcess() {
-			excessContainer.innerHTML = '';
-			var n = countChecked();
 			/* Update counter */
+			var n = countChecked();
 			var counter = document.getElementById('pw2-candidate-counter');
 			if (counter) counter.textContent = _('Nodes: %d \u2022 Selected: %d').format(rows.length, n);
-			var b = renderExcessBanner(n, recommended);
-			if (b) excessContainer.appendChild(b);
+			updateExcessVisible();
 		}
 
 		/* Table rows */
@@ -255,14 +293,15 @@ var NodeTable = form.Value.extend({
 				? 'background:#f0f0f0;opacity:0.6;'
 				: '';
 
-			/* Candidate checkbox */
+			/* Candidate checkbox — disabled in auto mode (scanner manages candidates) */
+			var autoDisabled = (nodeMode === 'auto');
 			var cbCandidate = E('input', {
 				'type':           'checkbox',
 				'data-candidate': '1',
 				'data-node-id':   row.id,
 				'checked':        isCandidate ? true : null,
-				'disabled':       isExcluded  ? true : null,
-				'style':          isExcluded  ? 'opacity:0.3;' : ''
+				'disabled':       (isExcluded || autoDisabled) ? true : null,
+				'style':          (isExcluded || autoDisabled) ? 'opacity:0.3;' : ''
 			});
 
 			/* Excluded checkbox */
@@ -289,13 +328,13 @@ var NodeTable = form.Value.extend({
 				}
 				var field = cbExcluded.closest('[data-field]');
 				if (field) field.dispatchEvent(new CustomEvent('widget-change', { bubbles: true }));
-				updateExcess();
+				updateExcessVisible();
 			});
 
 			cbCandidate.addEventListener('change', function() {
 				var field = cbCandidate.closest('[data-field]');
 				if (field) field.dispatchEvent(new CustomEvent('widget-change', { bubbles: true }));
-				updateExcess();
+				updateExcessVisible();
 			});
 
 			/* Manual test result cell */
@@ -317,6 +356,7 @@ var NodeTable = form.Value.extend({
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.transport || '-'),
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.security  || '-'),
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;text-align:center;' }, [ renderLatencyBadge(row.id, cache) ]),
+				E('td', { 'class': 'td', 'style': 'text-align:center;padding:6px 8px;white-space:nowrap;' }, [ renderCheckedCell(row.id, cache) ]),
 				E('td', { 'class': 'td', 'style': 'text-align:center;padding:6px 8px;' }, [ testBtn ]),
 				testResultCell,
 				E('td', { 'class': 'td', 'style': 'text-align:center;padding:6px 8px;' }, [ cbCandidate ]),
@@ -326,6 +366,15 @@ var NodeTable = form.Value.extend({
 
 		var initialSelected = candidates.length;
 
+		/* In auto mode, excess banner is not relevant — candidates are managed automatically */
+		function updateExcessVisible() {
+			if (nodeMode !== 'manual') { excessContainer.innerHTML = ''; return; }
+			excessContainer.innerHTML = '';
+			var n = countChecked();
+			var b = renderExcessBanner(n, recommended);
+			if (b) excessContainer.appendChild(b);
+		}
+
 		var counterEl = E('span', {
 			'id': 'pw2-candidate-counter',
 			'style': 'color:#666;'
@@ -333,10 +382,8 @@ var NodeTable = form.Value.extend({
 
 		var autoModeNote = nodeMode === 'auto'
 			? E('p', { 'style': 'margin:0 0 0.75em 0;padding:8px 10px;background:#fffbea;border:1px solid #f59e0b;border-radius:4px;color:#78350f;font-size:0.9em;' },
-				_('\u26a0 Node selection mode is Auto. The watchdog will automatically update the candidate list ' +
-				  'after each scan cycle. Checked nodes shown here reflect the current auto selection \u2014 ' +
-				  'manual changes will be overwritten on the next scan. ' +
-				  'Changes take effect only after Save & Apply.')
+				_('\u26a0 Node selection mode is Auto. The watchdog manages the candidate list automatically. ' +
+				  'Candidate checkboxes are read-only \u2014 use Excluded to permanently remove a node from all watchdog cycles.')
 			  )
 			: E('p', { 'style': 'margin:0 0 0.75em 0;color:#666;font-size:0.9em;' },
 				_('Check nodes to include in automatic switching (Candidate). ' +
@@ -381,6 +428,7 @@ var NodeTable = form.Value.extend({
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Transport')),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Security')),
 					E('th', { 'class': 'th', 'style': 'text-align:center;padding:6px 8px;' }, _('Latency')),
+					E('th', { 'class': 'th', 'style': 'text-align:center;padding:6px 8px;color:#666;' }, _('Checked')),
 					E('th', { 'class': 'th', 'style': 'text-align:center;padding:6px 8px;' }, _('Test')),
 					E('th', { 'class': 'th', 'style': 'text-align:center;padding:6px 8px;' }, _('Result')),
 					E('th', { 'class': 'th', 'style': 'text-align:center;padding:6px 8px;' }, candidateColHeader),
@@ -389,9 +437,11 @@ var NodeTable = form.Value.extend({
 			].concat(tableRows))
 		]);
 
-		/* Initial excess banner */
-		var initBanner = renderExcessBanner(initialSelected, recommended);
-		if (initBanner) excessContainer.appendChild(initBanner);
+		/* Initial excess banner — only in manual mode */
+		if (nodeMode === 'manual') {
+			var initBanner = renderExcessBanner(initialSelected, recommended);
+			if (initBanner) excessContainer.appendChild(initBanner);
+		}
 
 		return wrapper;
 	},
