@@ -352,11 +352,11 @@ var NodeTable = form.Value.extend({
 				'click': function(ev) { ev.preventDefault(); testNode(row.id, testResultCell); }
 			}, _('Test'));
 
-			/* IP cell: flag+name on line1, IP on line2 */
+			/* IP cell */
 			var ipCell = E('td', {
 				'class': 'td',
 				'data-ip-cell': '1',
-				'style': 'padding:6px 8px;font-size:0.82em;color:#555;display:none;white-space:nowrap;'
+				'style': 'padding:6px 8px;display:none;white-space:nowrap;'
 			}, row.ip || '-');
 
 			return E('tr', { 'class': 'tr cbi-section-table-row', 'style': rowStyle }, [

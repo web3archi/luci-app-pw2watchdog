@@ -232,7 +232,8 @@ function getNodeMeta(nodeIndex, nodeId) {
 
 function fmtLatency(v) {
 	var n = Number(v);
-	return (!n || n <= 0) ? '-' : String(n) + ' ms';
+	if (!n || n <= 0 || n >= 999999) return '-';
+	return String(n) + ' ms';
 }
 
 function fmtTs(ts) {
