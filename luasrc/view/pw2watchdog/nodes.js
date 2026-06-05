@@ -85,7 +85,8 @@ function buildNodeList() {
 			id: s['.name'], label: label,
 			protocol:  detectProtocol(s, label),
 			transport: detectTransport(s, label),
-			security:  detectSecurity(s, label)
+			security:  detectSecurity(s, label),
+			ip: s.server || s.address || ''
 		});
 	});
 	rows.sort(function(a, b) { return String(a.label).localeCompare(String(b.label)); });
@@ -96,7 +97,7 @@ function buildNodeList() {
  *  Latency badge + manual test
  * ------------------------------------------------------------------ */
 function latencyBadgeContent(entry) {
-	if (!entry) return { el: E('span', { 'style': 'color:#aaa;font-size:0.85em;' }, '-') };
+	if (!entry) return E('span', { 'style': 'color:#aaa;font-size:0.85em;' }, '-');
 	var latency = entry.latency || 0;
 	var status  = entry.status  || 'red';
 	var color, bg;
@@ -279,7 +280,9 @@ var NodeTable = form.Value.extend({
 			/* Update counter */
 			var n = countChecked();
 			var counter = document.getElementById('pw2-candidate-counter');
-			if (counter) counter.textContent = _('Nodes: %d \u2022 Selected: %d').format(rows.length, n);
+			if (counter) counter.textContent = nodeMode === 'auto'
+				? _('Nodes: %d').format(rows.length)
+				: _('Nodes: %d \u2022 Selected: %d').format(rows.length, n);
 			updateExcessVisible();
 		}
 
@@ -349,9 +352,17 @@ var NodeTable = form.Value.extend({
 				'click': function(ev) { ev.preventDefault(); testNode(row.id, testResultCell); }
 			}, _('Test'));
 
+			/* IP cell: flag+name on line1, IP on line2 */
+			var ipCell = E('td', {
+				'class': 'td',
+				'data-ip-cell': '1',
+				'style': 'padding:6px 8px;font-size:0.82em;color:#555;display:none;white-space:nowrap;'
+			}, row.ip || '-');
+
 			return E('tr', { 'class': 'tr cbi-section-table-row', 'style': rowStyle }, [
 				E('td', { 'class': 'td', 'style': 'text-align:right;padding:6px 8px;width:1%;white-space:nowrap;color:#666;' }, String(idx + 1)),
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.label || '-'),
+				ipCell,
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.protocol  || '-'),
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.transport || '-'),
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.security  || '-'),
@@ -378,7 +389,9 @@ var NodeTable = form.Value.extend({
 		var counterEl = E('span', {
 			'id': 'pw2-candidate-counter',
 			'style': 'color:#666;'
-		}, _('Nodes: %d \u2022 Selected: %d').format(rows.length, initialSelected));
+		}, nodeMode === 'auto'
+			? _('Nodes: %d').format(rows.length)
+			: _('Nodes: %d \u2022 Selected: %d').format(rows.length, initialSelected));
 
 		var autoModeNote = nodeMode === 'auto'
 			? E('p', { 'style': 'margin:0 0 0.75em 0;padding:8px 10px;background:#fffbea;border:1px solid #f59e0b;border-radius:4px;color:#78350f;font-size:0.9em;' },
@@ -392,10 +405,29 @@ var NodeTable = form.Value.extend({
 				  'Changes take effect only after Save & Apply.')
 			  );
 
+		/* Show IP toggle */
+		var showIpChecked = false;
+		var showIpCb = E('input', { 'type': 'checkbox', 'id': 'pw2-show-ip', 'style': 'margin-right:4px;vertical-align:middle;' });
+		showIpCb.addEventListener('change', function() {
+			showIpChecked = showIpCb.checked;
+			var wrap = document.getElementById(cbid);
+			if (!wrap) return;
+			wrap.querySelectorAll('[data-ip-cell]').forEach(function(cell) {
+				cell.style.display = showIpChecked ? '' : 'none';
+			});
+			wrap.querySelectorAll('[data-ip-th]').forEach(function(th) {
+				th.style.display = showIpChecked ? '' : 'none';
+			});
+		});
+		var showIpLabel = E('label', { 'for': 'pw2-show-ip', 'style': 'font-size:0.9em;color:#666;cursor:pointer;user-select:none;' }, [
+			showIpCb, _('Show IP')
+		]);
+
 		var wrapper = E('div', { 'id': cbid, 'style': 'width:95%;max-width:1200px;' }, [
 			excessContainer,
 			E('div', { 'style': 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;' }, [
 				counterEl,
+				showIpLabel,
 				E('div', { 'style': 'margin-left:auto;display:flex;gap:6px;' }, [
 					E('button', {
 						'class': 'btn cbi-button',
@@ -424,6 +456,7 @@ var NodeTable = form.Value.extend({
 				E('tr', { 'class': 'tr table-titles' }, [
 					E('th', { 'class': 'th', 'style': 'text-align:right;padding:6px 8px;width:1%;' }, '#'),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Label')),
+					E('th', { 'class': 'th', 'data-ip-th': '1', 'style': 'padding:6px 8px;display:none;' }, _('IP / Host')),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Protocol')),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Transport')),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Security')),

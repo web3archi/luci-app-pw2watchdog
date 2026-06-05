@@ -418,11 +418,14 @@ return view.extend({
 				));
 			}
 
-			/* Active candidates */
-			var candidateCountLive = obj.candidate_count || liveCandidates.length || 0;
+			/* Active candidates — show dash until watchdog has run at least once */
+			var candidateCountRaw = obj.candidate_count !== undefined ? obj.candidate_count : null;
+			var candidateCountLive = (candidateCountRaw !== null && candidateCountRaw !== '')
+				? String(candidateCountRaw)
+				: (liveCandidates.length > 0 ? String(liveCandidates.length) : '\u2014');
 			runtimeTable.appendChild(makeRow(
 				_('Active candidates'),
-				makeSimpleValue(String(candidateCountLive)),
+				makeSimpleValue(candidateCountLive),
 				_('Number of nodes currently in the candidate pool for automatic selection.')
 			));
 
