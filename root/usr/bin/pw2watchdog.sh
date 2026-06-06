@@ -712,6 +712,15 @@ run_once() {
 	fi
 
 	choose_target "$current"
+
+	# If static blackhole is active but nodes are now reachable — remove DROP immediately.
+	# This handles the case where the watchdog was restarted while blackhole was active,
+	# or nodes recovered before the next all_failed cycle.
+	if [ -n "$STATIC_BH_HANDLE" ] && [ "${TARGET_REASON}" != "all_failed" ]; then
+		log "static blackhole: nodes recovered, removing stale DROP (handle=$STATIC_BH_HANDLE)"
+		_static_blackhole_remove
+	fi
+
 	apply_fallback_policy "$current"
 
 	if should_switch "$current" "$TARGET_NODE" "$now"; then
@@ -747,12 +756,11 @@ run_once() {
 	fi
 
 	LAST_TARGET="$TARGET_NODE"
-	LAST_REASON="${LAST_REASON:-$TARGET_REASON}"
-
+	# Always use current TARGET_REASON for fallback actions; preserve LAST_REASON only for stay
 	case "$TARGET_REASON" in
-	fallback_blackhole_all_failed) action="fallback_blackhole"; history_node="$current" ;;
-	fallback_direct_all_failed)    action="fallback_direct";    history_node="$current" ;;
-	*)                             action="stay";               history_node="$current" ;;
+	fallback_blackhole_all_failed) LAST_REASON="$TARGET_REASON"; action="fallback_blackhole"; history_node="$current" ;;
+	fallback_direct_all_failed)    LAST_REASON="$TARGET_REASON"; action="fallback_direct";    history_node="$current" ;;
+	*)                             LAST_REASON="${LAST_REASON:-$TARGET_REASON}"; action="stay"; history_node="$current" ;;
 	esac
 
 	save_state
