@@ -37,11 +37,14 @@ start() {
 	# Subscribe install (idempotent)
 	if [ -x "$SUBSCRIBE" ]; then
 		"$SUBSCRIBE" install
-		local on_boot
+		local on_boot boot_delay
 		on_boot="$(uci -q get pw2watchdog.advanced.sub_update_on_boot)"
 		if [ "$on_boot" = "1" ]; then
-			logger -t pw2watchdog "sub_update_on_boot=1, running subscription update in background"
-			"$SUBSCRIBE" run &
+			boot_delay="$(uci -q get pw2watchdog.advanced.sub_boot_delay)"
+			# Minimum delay 120s — ensures scanner completes first cycle before subscribe
+			[ -n "$boot_delay" ] && [ "$boot_delay" -ge 120 ] 2>/dev/null || boot_delay=120
+			logger -t pw2watchdog "sub_update_on_boot=1, subscription update delayed ${boot_delay}s"
+			( sleep "$boot_delay"; "$SUBSCRIBE" run ) &
 		fi
 	fi
 

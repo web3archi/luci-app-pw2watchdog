@@ -381,6 +381,13 @@ return view.extend({
 		o.description = _('Run a subscription update once after each router reboot, in addition to the daily schedule.');
 		o.depends('sub_auto_update', '1');
 
+		o = adv.option(form.Value, 'sub_boot_delay', _('Boot update delay (seconds)'));
+		o.datatype    = 'uinteger';
+		o.placeholder = '120';
+		o.rmempty     = true;
+		o.depends('sub_update_on_boot', '1');
+		o.description = _('Delay in seconds before running subscription update on boot. Minimum: 120 s — allows the scanner to complete its first cycle and populate the node cache before nodes are replaced by a subscription update. Values below 120 are ignored and 120 is used instead.');
+
 		/* --- Actions --- */
 		var actions = m.section(form.NamedSection, '__actions__', 'dummy');
 		var self = this;
