@@ -185,6 +185,8 @@ load_cfg() {
 	config_get TEST_URL                      main test_url                      'https://cp.cloudflare.com/generate_204'
 	config_get NODE_SELECTION                main node_selection                'auto'
 	config_get FALLBACK_ACTION               main fallback_action               'blackhole'
+	config_get ROTATE_MAX_ROUNDS             main rotate_max_rounds             '3'
+	config_get ROTATE_FINAL_ACTION           main rotate_final_action           'blackhole'
 	config_get INITIAL_DEFAULT_NODE          main initial_default_node          ''
 	config_list_foreach main candidate_node append_candidate
 	config_list_foreach main exclude_node   append_exclude_node
@@ -200,6 +202,8 @@ load_state() {
 	LAST_BEST_NODE=""
 	LAST_BEST_LATENCY=""
 	STATIC_BH_HANDLE=""   # handle of the static blackhole nft DROP rule
+	ROTATE_ROUND=0        # current rotation round counter
+	ROTATE_OFFSET=0       # current offset into sorted node list
 	[ -f "$STATE_FILE" ] && . "$STATE_FILE"
 }
 
@@ -211,6 +215,8 @@ LAST_REASON='${LAST_REASON:-}'
 LAST_BEST_NODE='${LAST_BEST_NODE:-}'
 LAST_BEST_LATENCY='${LAST_BEST_LATENCY:-}'
 STATIC_BH_HANDLE='${STATIC_BH_HANDLE:-}'
+ROTATE_ROUND=${ROTATE_ROUND:-0}
+ROTATE_OFFSET=${ROTATE_OFFSET:-0}
 EOFSTATE
 }
 
@@ -577,6 +583,101 @@ _static_blackhole_remove() {
 }
 
 # ---------------------------------------------------------------------------
+# Rotate-all fallback: cycle through all non-excluded nodes from cache
+# ---------------------------------------------------------------------------
+_rotate_all_next_group() {
+	local cache_file="$STATE_DIR/latency_cache.json"
+	[ -f "$cache_file" ] || { log "rotate_all: no cache file"; return 1; }
+
+	local recommended="${RECOMMENDED_CANDIDATES:-3}"
+	[ "$recommended" -lt 1 ] && recommended=3
+
+	# Get all live nodes sorted by latency (excluding excluded)
+	local all_sorted
+	all_sorted="$(awk -v max="$MAX_LATENCY" '
+		{
+			line = $0
+			if (match(line, /"[^"]+":/) == 0) next
+			id = substr(line, RSTART+1, RLENGTH-3)
+			if (match(line, /"latency": *[0-9]+/) == 0) next
+			latstr = substr(line, RSTART, RLENGTH)
+			sub(/"latency": */, "", latstr)
+			lat = latstr + 0
+			if (match(line, /"status": *"[^"]+"/) == 0) next
+			ststr = substr(line, RSTART, RLENGTH)
+			sub(/"status": *"/, "", ststr)
+			sub(/".*/, "", ststr)
+			if (lat > 0 && lat <= max && ststr != "red")
+				print lat "\t" id
+		}
+	' "$cache_file" | sort -n | awk '{print $2}')"
+
+	[ -n "$all_sorted" ] || { log "rotate_all: no live nodes in cache"; return 1; }
+
+	# Filter excluded nodes
+	local filtered="" node
+	for node in $all_sorted; do
+		is_excluded_node "$node" && continue
+		filtered="$filtered $node"
+	done
+	filtered="${filtered# }"
+	[ -n "$filtered" ] || { log "rotate_all: all nodes excluded"; return 1; }
+
+	local total
+	total="$(echo "$filtered" | wc -w)"
+
+	# Pick group starting at ROTATE_OFFSET
+	local offset="${ROTATE_OFFSET:-0}"
+	[ "$offset" -ge "$total" ] && offset=0
+
+	# Extract next N nodes from offset position
+	local group
+	group="$(echo "$filtered" | tr ' ' '\n' | tail -n +"$((offset + 1))" | head -n "$recommended" | tr '\n' ' ')"
+	group="${group% }"
+
+	# If group is empty (offset at end), wrap around
+	if [ -z "$group" ]; then
+		offset=0
+		group="$(echo "$filtered" | tr ' ' '\n' | head -n "$recommended" | tr '\n' ' ')"
+		group="${group% }"
+		ROTATE_ROUND=$((ROTATE_ROUND + 1))
+		log "rotate_all: wrapped to round $ROTATE_ROUND offset=0"
+	else
+		# Check if we've advanced past recommended boundary → new round
+		local next_offset=$((offset + recommended))
+		if [ "$next_offset" -ge "$total" ]; then
+			ROTATE_ROUND=$((ROTATE_ROUND + 1))
+			ROTATE_OFFSET=0
+			log "rotate_all: completed round $ROTATE_ROUND (total=$total)"
+		else
+			ROTATE_OFFSET=$next_offset
+			log "rotate_all: round=$ROTATE_ROUND offset=$ROTATE_OFFSET/$total group=[$group]"
+		fi
+	fi
+
+	# Best node = first in group (already sorted by latency)
+	local best_in_group
+	best_in_group="$(echo "$group" | awk '{print $1}')"
+
+	[ -n "$best_in_group" ] || return 1
+
+	log "rotate_all: switching to best_in_group=$best_in_group (candidates: $group)"
+
+	# Update candidates in UCI + memory
+	uci -q delete "${CONFIG_NAME}.main.candidate_node"
+	for node in $group; do
+		uci -q add_list "${CONFIG_NAME}.main.candidate_node=$node"
+	done
+	uci commit "$CONFIG_NAME"
+	CANDIDATES="$group"
+
+	# Override target
+	TARGET_NODE="$best_in_group"
+	BEST_NODE="$best_in_group"
+	return 0
+}
+
+# ---------------------------------------------------------------------------
 # Fallback policy when all_failed
 #
 # We do NOT use PassWall2 _blackhole/_direct as target nodes.
@@ -589,16 +690,59 @@ apply_fallback_policy() {
 	[ "$TARGET_REASON" = "all_failed" ] || return 0
 
 	case "${FALLBACK_ACTION:-blackhole}" in
+	rotate_all)
+		# Remove static blackhole if it was active
+		[ -n "$STATIC_BH_HANDLE" ] && _static_blackhole_remove
+
+		local max_rounds="${ROTATE_MAX_ROUNDS:-3}"
+		local final="${ROTATE_FINAL_ACTION:-blackhole}"
+
+		# Check if we've exhausted all rotation rounds
+		if [ "${ROTATE_ROUND:-0}" -ge "$max_rounds" ]; then
+			log "rotate_all: exhausted $max_rounds rounds, applying final action=$final"
+			ROTATE_ROUND=0
+			ROTATE_OFFSET=0
+			case "$final" in
+			direct)
+				TARGET_REASON="fallback_direct_all_failed"
+				;;
+			blackhole|*)
+				_static_blackhole_insert
+				TARGET_REASON="fallback_blackhole_all_failed"
+				;;
+			esac
+		else
+			if _rotate_all_next_group; then
+				TARGET_REASON="rotate_all"
+			else
+				# No live nodes anywhere — apply final action
+				log "rotate_all: no live nodes, applying final action=$final"
+				ROTATE_ROUND=0
+				ROTATE_OFFSET=0
+				case "$final" in
+				direct)
+					TARGET_REASON="fallback_direct_all_failed"
+					;;
+				blackhole|*)
+					_static_blackhole_insert
+					TARGET_REASON="fallback_blackhole_all_failed"
+					;;
+				esac
+			fi
+		fi
+		;;
 	direct)
 		# If static blackhole was previously active — remove it
 		[ -n "$STATIC_BH_HANDLE" ] && {
 			log "fallback: switching from blackhole to direct, removing static DROP"
 			_static_blackhole_remove
 		}
+		ROTATE_ROUND=0; ROTATE_OFFSET=0
 		TARGET_REASON="fallback_direct_all_failed"
 		;;
 	blackhole|*)
 		# Insert static DROP if not already active
+		ROTATE_ROUND=0; ROTATE_OFFSET=0
 		_static_blackhole_insert
 		TARGET_REASON="fallback_blackhole_all_failed"
 		;;
