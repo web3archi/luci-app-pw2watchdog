@@ -108,12 +108,15 @@ append_history() {
 	[ -n "$action" ] || action="unknown"
 	[ -n "$node" ]   || node="-"
 	[ -n "$reason" ] || reason="-"
+	local label
+	label="$(node_label "$node")"
 
 	mkdir -p "$STATE_DIR"
 	json_init
 	json_add_int    ts     "$ts"
 	json_add_string action "$action"
 	json_add_string node   "$node"
+	json_add_string label  "$label"
 	json_add_string reason "$reason"
 	json_dump >> "$HISTORY_FILE"
 	printf '\n' >> "$HISTORY_FILE"

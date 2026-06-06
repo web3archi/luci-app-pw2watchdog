@@ -512,6 +512,11 @@ return view.extend({
 			]);
 			items.slice(0, 20).forEach(function(item, idx) {
 				var meta = getNodeMeta(nodeIndex, item.node || '-');
+				/* If node is no longer in UCI (e.g. after subscription update),
+				 * fall back to the label saved in history.jsonl at the time of event */
+				if (item.label && (meta.label === meta.id || meta.label === (item.node || '-'))) {
+					meta = Object.assign({}, meta, { label: item.label });
+				}
 				table.appendChild(E('tr', { 'class': 'tr cbi-section-table-row' }, [
 					E('td', { 'style': 'padding:8px;text-align:right;color:#666;width:1%;white-space:nowrap;' }, String(idx + 1)),
 					E('td', { 'style': 'padding:8px;white-space:nowrap;' }, fmtTs(item.ts)),
