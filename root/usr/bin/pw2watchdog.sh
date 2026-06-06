@@ -383,6 +383,29 @@ measure_latency() {
 }
 
 # ---------------------------------------------------------------------------
+# Read latency for a node from the scanner cache (do not remeasure live).
+# Returns 0 if node not in cache or cache missing.
+# ---------------------------------------------------------------------------
+read_cache_latency() {
+	local node="$1"
+	local cache_file="$STATE_DIR/latency_cache.json"
+	[ -f "$cache_file" ] || { echo 0; return 1; }
+	[ -n "$node" ]       || { echo 0; return 1; }
+
+	awk -v id="$node" '
+		$0 ~ """ id "":" {
+			found = 1
+		}
+		found && match($0, /"latency": *[0-9]+/) {
+			s = substr($0, RSTART, RLENGTH)
+			sub(/"latency": */, "", s)
+			print s + 0
+			exit
+		}
+	' "$cache_file"
+}
+
+# ---------------------------------------------------------------------------
 # Trigger A: emergency candidate refresh from latency_cache.json.
 # Called when NODE_SELECTION=auto and all current candidates have gone red.
 # ---------------------------------------------------------------------------
@@ -457,10 +480,11 @@ choose_target() {
 	CURRENT_NODE="$1"
 	CURRENT_LATENCY=0
 
+	# Read current node latency from cache (scanner keeps it fresh)
 	if [ -n "$CURRENT_NODE" ]; then
-		CURRENT_LATENCY="$(measure_latency "$CURRENT_NODE")"
+		CURRENT_LATENCY="$(read_cache_latency "$CURRENT_NODE")"
 		[ -n "$CURRENT_LATENCY" ] || CURRENT_LATENCY=0
-		log "current_node=$CURRENT_NODE latency=${CURRENT_LATENCY}ms"
+		log "current_node=$CURRENT_NODE latency=${CURRENT_LATENCY}ms (cache)"
 	fi
 
 	for node in $CANDIDATES; do
@@ -469,14 +493,9 @@ choose_target() {
 			continue
 		fi
 
-		if [ "$node" = "$CURRENT_NODE" ] && [ "${CURRENT_LATENCY:-0}" -gt 0 ]; then
-			latency="$CURRENT_LATENCY"
-			log "candidate=$node latency=${latency}ms (reused)"
-		else
-			latency="$(measure_latency "$node")"
-			[ -n "$latency" ] || latency=0
-			log "candidate=$node latency=${latency}ms"
-		fi
+		latency="$(read_cache_latency "$node")"
+		[ -n "$latency" ] || latency=0
+		log "candidate=$node latency=${latency}ms (cache)"
 
 		if [ "$latency" -gt 0 ] \
 		&& [ "$latency" -le "$MAX_LATENCY" ] \
@@ -490,15 +509,15 @@ choose_target() {
 	LAST_BEST_NODE="$BEST_NODE"
 	LAST_BEST_LATENCY="$BEST_LATENCY"
 
-	# Trigger A: all candidates failed and mode is auto — emergency rotation
+	# Trigger A: all candidates failed and mode is auto — emergency rotation from cache
 	if [ "$all_failed" -eq 1 ] && [ "${NODE_SELECTION:-auto}" = "auto" ]; then
 		log "all candidates failed, attempting emergency auto-rotate"
 		if emergency_rotate_candidates; then
 			for node in $CANDIDATES; do
 				is_excluded_node "$node" && continue
-				latency="$(measure_latency "$node")"
+				latency="$(read_cache_latency "$node")"
 				[ -n "$latency" ] || latency=0
-				log "candidate(after rotate)=$node latency=${latency}ms"
+				log "candidate(after rotate)=$node latency=${latency}ms (cache)"
 				if [ "$latency" -gt 0 ] \
 				&& [ "$latency" -le "$MAX_LATENCY" ] \
 				&& [ "$latency" -lt "$BEST_LATENCY" ]; then
