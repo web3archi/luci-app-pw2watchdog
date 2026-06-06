@@ -566,26 +566,25 @@ _static_blackhole_insert() {
 }
 
 _static_blackhole_remove() {
-	[ -n "$STATIC_BH_HANDLE" ] || return 0
+	# Remove ALL drop rules from the mangle chain (not just by saved handle).
+	# This handles cases where handle was lost (restart, manual removal, race).
+	local h handles removed=0
 
-	local h="$STATIC_BH_HANDLE"
-	if [ "$h" = "unknown" ]; then
-		# handle is unknown — search by rule content
-		h="$(nft -a list chain "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" 2>/dev/null \
-			| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1; exit}')"
-	fi
+	handles="$(nft -a list chain "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" 2>/dev/null \
+		| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1}')"
 
-	if [ -n "$h" ]; then
+	for h in $handles; do
 		nft delete rule "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" handle "$h" 2>/dev/null
 		if [ $? -eq 0 ]; then
 			log "static blackhole: DROP removed (handle=$h)"
+			removed=$((removed + 1))
 		else
 			log "static blackhole: WARNING — failed to remove DROP (handle=$h)"
-			log "static blackhole: manual fix: nft delete rule $PW2_NFTABLE_NAME $PW2_NFTCHAIN_MANGLE handle $h"
 		fi
-	else
+	done
+
+	[ "$removed" -eq 0 ] && [ -n "$STATIC_BH_HANDLE" ] && \
 		log "static blackhole: DROP rule not found (may have been removed already)"
-	fi
 
 	STATIC_BH_HANDLE=""
 	save_state
@@ -924,7 +923,23 @@ run_once() {
 	return 0
 }
 
+# Remove any leftover DROP rules from previous process (restart, crash, etc.)
+_cleanup_stale_drops() {
+	[ -n "$PW2_NFTABLE_NAME" ]    || return 0
+	[ -n "$PW2_NFTCHAIN_MANGLE" ] || return 0
+	local h handles
+	handles="$(nft -a list chain "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" 2>/dev/null \
+		| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1}')"
+	for h in $handles; do
+		nft delete rule "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" handle "$h" 2>/dev/null \
+			&& log "startup: removed stale DROP rule (handle=$h)"
+	done
+	STATIC_BH_HANDLE=""
+}
+
 daemon_loop() {
+	# On first start — clean up any DROP rules left by previous process
+	_cleanup_stale_drops
 	while true; do
 		run_once
 		load_cfg
