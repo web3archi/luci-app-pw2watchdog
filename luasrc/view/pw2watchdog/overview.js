@@ -258,6 +258,7 @@ function describeAction(action) {
 	case 'stay':                return _('Stayed');
 	case 'fallback_direct':     return _('Fallback to Direct');
 	case 'fallback_blackhole':  return _('Fallback to Blackhole');
+	case 'rotate_all':          return _('Rotate All Nodes');
 	default:                    return action || '-';
 	}
 }
@@ -291,6 +292,7 @@ function formatReason(reason) {
 	case 'all_failed_unknown_mode_hold':   return _('All candidate nodes failed; keeping current node due to unknown fallback mode');
 	case 'fallback_direct_all_failed':     return _('All candidate nodes failed; switched to direct connection');
 	case 'fallback_blackhole_all_failed':  return _('All candidate nodes failed; blocked traffic');
+	case 'rotate_all':                     return _('All candidates failed; rotating through all available nodes');
 	case 'suppressed_min_switch_interval': return _('Switch suppressed by minimum switch interval');
 	case 'suppressed_small_improvement':   return _('Switch suppressed because latency improvement was too small');
 	case 'switch_failed':                  return _('Switch attempt failed');

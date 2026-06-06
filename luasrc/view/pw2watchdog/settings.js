@@ -243,13 +243,31 @@ return view.extend({
 		o = s.option(form.ListValue, 'fallback_action', _('Fallback action'));
 		o.default  = 'blackhole';
 		o.rmempty  = false;
-		o.value('blackhole', _('Blackhole \u2014 block traffic (recommended)'));
-		o.value('direct',    _('Direct \u2014 bypass proxy, use WAN'));
+		o.value('blackhole',  _('Blackhole \u2014 block traffic (recommended)'));
+		o.value('direct',     _('Direct \u2014 bypass proxy, use WAN'));
+		o.value('rotate_all', _('Rotate all \u2014 cycle through all nodes'));
 		o.description = _(
 			'What to do when no healthy candidate node is available. ' +
 			'Blackhole blocks all proxy traffic and prevents unproxied leaks. ' +
-			'Direct falls back to the regular WAN connection.'
+			'Direct falls back to the regular WAN connection. ' +
+			'Rotate all cycles through all non-excluded nodes from the last scan.'
 		);
+
+		o = s.option(form.Value, 'rotate_max_rounds', _('Rotate: max rounds'));
+		o.datatype    = 'uinteger';
+		o.placeholder = '3';
+		o.rmempty     = true;
+		o.depends('fallback_action', 'rotate_all');
+		o.description = _('Number of full rotations through all nodes before applying the final action. Default: 3.');
+
+		o = s.option(form.ListValue, 'rotate_final_action', _('Rotate: final action'));
+		o.default  = 'blackhole';
+		o.rmempty  = true;
+		o.depends('fallback_action', 'rotate_all');
+		o.value('blackhole', _('Blackhole \u2014 block traffic after rotation'));
+		o.value('direct',    _('Direct \u2014 use WAN after rotation'));
+		o.value('rotate_all', _('Continue rotating indefinitely'));
+		o.description = _('Action to take after exhausting all rotation rounds.');
 
 		o = s.option(form.Value, 'check_interval', _('Check interval'));
 		o.datatype    = 'uinteger';
