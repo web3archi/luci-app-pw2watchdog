@@ -428,7 +428,7 @@ var NodeTable = form.Value.extend({
 			E('div', { 'style': 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;' }, [
 				counterEl,
 				showIpLabel,
-				E('div', { 'style': 'margin-left:auto;display:flex;gap:6px;' }, [
+				E('div', { 'style': nodeMode === 'auto' ? 'display:none;' : 'margin-left:auto;display:flex;gap:6px;' }, [
 					E('button', {
 						'class': 'btn cbi-button',
 						'click': function(ev) {
