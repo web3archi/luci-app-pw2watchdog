@@ -11,6 +11,9 @@ PID_WATCHDOG=/var/run/pw2watchdog/watchdog.pid
 PID_SCANNER=/var/run/pw2watchdog/scanner.pid
 
 start() {
+	# Remove any stale procd registration to prevent ubus conflicts
+	ubus call service delete '{"name":"pw2watchdog"}' 2>/dev/null
+
 	local enabled
 	enabled="$(uci -q get pw2watchdog.main.enabled)"
 	[ "$enabled" = "1" ] || {
