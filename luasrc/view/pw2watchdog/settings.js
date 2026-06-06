@@ -385,12 +385,14 @@ return view.extend({
 						}
 					}, _('Restore defaults')),
 					E('button', {
-						'class': 'btn cbi-button',
+						'class': 'btn cbi-button cbi-button-action',
+						'id': 'pw2-restore-advanced-btn',
+						'style': 'display:none;',
 						'click': function(ev) {
 							ev.preventDefault();
 							return resetAdvanced(m);
 						}
-					}, _('Reset advanced to auto-detect'))
+					}, _('Restore advanced to auto-detect'))
 				])
 			]);
 		};
@@ -422,6 +424,8 @@ return view.extend({
 							if (child !== h3) child.style.display = expanded ? '' : 'none';
 						});
 						arrow.textContent = expanded ? ' ▼' : ' ▶';
+						var restoreBtn = document.getElementById('pw2-restore-advanced-btn');
+						if (restoreBtn) restoreBtn.style.display = expanded ? '' : 'none';
 					});
 					break;
 				}
