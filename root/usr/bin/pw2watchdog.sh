@@ -392,17 +392,7 @@ read_cache_latency() {
 	[ -f "$cache_file" ] || { echo 0; return 1; }
 	[ -n "$node" ]       || { echo 0; return 1; }
 
-	awk -v id="$node" '
-		$0 ~ """ id "":" {
-			found = 1
-		}
-		found && match($0, /"latency": *[0-9]+/) {
-			s = substr($0, RSTART, RLENGTH)
-			sub(/"latency": */, "", s)
-			print s + 0
-			exit
-		}
-	' "$cache_file"
+	awk -v id="$node" 'index($0, "\"" id "\":") > 0 {found=1} found && match($0, /"latency":[[:space:]]*[0-9]+/) {s=substr($0,RSTART,RLENGTH); sub(/"latency":[[:space:]]*/,"",s); print s+0; exit}' "$cache_file"
 }
 
 # ---------------------------------------------------------------------------
