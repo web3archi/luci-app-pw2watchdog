@@ -654,7 +654,7 @@ run_once() {
 	local now current action status_current history_node
 
 	acquire_lock
-	trap "release_lock" EXIT INT TERM
+	trap "[ -n \"\$STATIC_BH_HANDLE\" ] && _static_blackhole_remove; release_lock" EXIT INT TERM
 
 	# Signal the UI immediately — before any loading
 	mkdir -p "$STATE_DIR"

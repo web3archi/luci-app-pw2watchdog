@@ -50,6 +50,19 @@ start_service() {
 
 stop_service() {
 	logger -t pw2watchdog "Service stopped."
+	# Clean up static blackhole nft rule if it was left behind
+	local state_file="/var/run/pw2watchdog/state"
+	if [ -f "$state_file" ]; then
+		local handle
+		handle="$(grep 'STATIC_BH_HANDLE' "$state_file" | cut -d"'" -f2)"
+		if [ -n "$handle" ] && [ "$handle" != "unknown" ] && [ "$handle" != "" ]; then
+			nft delete rule inet passwall2 PSW2_MANGLE handle "$handle" 2>/dev/null && \
+				logger -t pw2watchdog "stop_service: removed blackhole nft handle $handle"
+		fi
+	fi
+	# Kill any remaining daemon processes
+	killall pw2watchdog.sh pw2watchdog-scanner.sh 2>/dev/null
+	sleep 1
 }
 
 service_triggers() {
