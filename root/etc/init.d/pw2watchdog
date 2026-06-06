@@ -73,7 +73,9 @@ stop() {
 
 	# Kill all instances (by name — covers manually started processes too)
 	killall pw2watchdog.sh pw2watchdog-scanner.sh 2>/dev/null
-	sleep 1
+	sleep 2
+	# Force kill if still running
+	killall -9 pw2watchdog.sh pw2watchdog-scanner.sh 2>/dev/null
 	# Clean up pid files
 	rm -f "$PID_WATCHDOG" "$PID_SCANNER"
 }
