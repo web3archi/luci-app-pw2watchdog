@@ -268,11 +268,17 @@ run_scan() {
 }
 
 daemon_loop() {
+	# Clean exit on SIGTERM/SIGINT (sent by procd on stop/restart)
+	trap 'release_lock; exit 0' TERM INT
 	load_cfg
 	run_scan
 	while true; do
 		load_cfg
-		sleep "$SCAN_INTERVAL"
+		# Use background sleep + wait so SIGTERM interrupts the sleep cleanly
+		sleep "$SCAN_INTERVAL" &
+		wait $!
+		# If we were interrupted (exit != 0) — exit gracefully
+		[ $? -eq 0 ] || { release_lock; exit 0; }
 		run_scan
 	done
 }
