@@ -27,6 +27,10 @@ return view.extend({
 
 				renderNote(_('Setup order'), [
 					_('PassWall2 must be fully working before enabling the watchdog: subscription added, nodes fetched, a real proxy node set as the default in Shunt Rules.'),
+					_('Step 1: Services → PassWall2 → Node Subscribe — add your subscription URL and fetch nodes.'),
+					_('Step 2: Node list → URL Test — test nodes, identify the best working one.'),
+					_('Step 3: Basic Settings → Main → Node — set "Node Xray_shunt: [rulenode]" (or whatever your shunt rule node is named).'),
+					_('Step 4: Shunt Rules → Default — set a real proxy node as the default.'),
 					_('The watchdog reads passwall2.rulenode.default_node. If this is empty, _direct, or _blackhole, the watchdog will not operate correctly.'),
 					_('Enable the watchdog in Settings, choose node selection mode and fallback action, then Save & Apply.'),
 					_('Open Overview to confirm the current node and latency are visible.')

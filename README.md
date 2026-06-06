@@ -76,8 +76,9 @@ Before enabling the watchdog, PassWall2 must be working:
 1. **Services → PassWall2 → Node Subscribe** — add your subscription URL
 2. **Node Subscribe → Manual Subscribe** — update the subscription (fetch nodes)
 3. **Node list → URL Test** — test nodes, identify the best working one
-4. **Shunt Rules → Default** — set a real proxy node as the default
-5. Verify that proxy traffic actually works through PassWall2
+4. **Basic Settings → Main → Node** — set `Node Xray_shunt: [rulenode]` (or whatever your shunt rule node is named)
+5. **Shunt Rules → Default** — set a real proxy node as the default
+6. Verify that proxy traffic actually works through PassWall2
 
 > The watchdog reads `passwall2.rulenode.default_node`. If this is empty, `_direct`, or `_blackhole`, the watchdog will not start correctly.
 
