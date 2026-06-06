@@ -314,14 +314,14 @@ _restart_with_blackhole() {
 
 	# 2. Get the handle of the inserted rule (first one without a comment — that's ours)
 	handle="$(nft -a list chain $nft_table $nft_chain 2>/dev/null \
-		| awk '/counter drop/{print $NF; exit}')"
+		| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1; exit}')"
 
 	if [ -z "$handle" ]; then
 		log "transit blackhole: cannot get rule handle, removing drop attempt and falling back"
 		# Try to remove by content in case the handle was not found
 		nft delete rule "$nft_table" "$nft_chain" \
 			handle "$(nft -a list chain $nft_table $nft_chain 2>/dev/null \
-				| awk '/counter drop/{print $NF; exit}')" 2>/dev/null
+				| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1; exit}')" 2>/dev/null
 		_restart_plain
 		return $?
 	fi
@@ -536,7 +536,7 @@ _static_blackhole_insert() {
 
 	local handle
 	handle="$(nft -a list chain "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" 2>/dev/null \
-		| awk '/counter drop/{print $NF; exit}')"
+		| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1; exit}')"
 
 	if [ -z "$handle" ]; then
 		STATIC_BH_HANDLE="unknown"
@@ -557,7 +557,7 @@ _static_blackhole_remove() {
 	if [ "$h" = "unknown" ]; then
 		# handle is unknown — search by rule content
 		h="$(nft -a list chain "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" 2>/dev/null \
-			| awk '/counter drop/{print $NF; exit}')"
+			| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1; exit}')"
 	fi
 
 	if [ -n "$h" ]; then
