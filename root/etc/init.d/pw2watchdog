@@ -3,12 +3,14 @@
 START=98
 STOP=15
 
-USE_PROCD=1
 WATCHDOG=/usr/bin/pw2watchdog.sh
 SCANNER=/usr/bin/pw2watchdog-scanner.sh
 SUBSCRIBE=/usr/bin/pw2watchdog-subscribe.sh
 
-start_service() {
+PID_WATCHDOG=/var/run/pw2watchdog/watchdog.pid
+PID_SCANNER=/var/run/pw2watchdog/scanner.pid
+
+start() {
 	local enabled
 	enabled="$(uci -q get pw2watchdog.main.enabled)"
 	[ "$enabled" = "1" ] || {
@@ -18,9 +20,18 @@ start_service() {
 
 	mkdir -p /var/run/pw2watchdog
 
-	# Install/update cron hooks for subscription auto-update.
-	# Also runs an immediate update if sub_update_on_boot=1.
-	# Safe to call every start — idempotent (removes old lines first).
+	# Clean up stale blackhole rule from previous run
+	local state_file="/var/run/pw2watchdog/state"
+	if [ -f "$state_file" ]; then
+		local handle
+		handle="$(grep 'STATIC_BH_HANDLE' "$state_file" | cut -d"'" -f2)"
+		if [ -n "$handle" ] && [ "$handle" != "unknown" ] && [ "$handle" != "" ]; then
+			nft delete rule inet passwall2 PSW2_MANGLE handle "$handle" 2>/dev/null && \
+				logger -t pw2watchdog "start: removed stale blackhole nft handle $handle"
+		fi
+	fi
+
+	# Subscribe install (idempotent)
 	if [ -x "$SUBSCRIBE" ]; then
 		"$SUBSCRIBE" install
 		local on_boot
@@ -31,47 +42,52 @@ start_service() {
 		fi
 	fi
 
-	procd_open_instance "watchdog"
-	procd_set_param command "$WATCHDOG" daemon
-	procd_set_param respawn 3600 5 5
-	procd_set_param term_timeout 3
-	procd_set_param stdout 1
-	procd_set_param stderr 1
-	procd_set_param file /etc/config/pw2watchdog
-	procd_close_instance
+	# Start watchdog daemon
+	if [ -x "$WATCHDOG" ]; then
+		"$WATCHDOG" daemon &
+		echo $! > "$PID_WATCHDOG"
+		logger -t pw2watchdog "watchdog started (pid $!)"
+	fi
 
-	procd_open_instance "scanner"
-	procd_set_param command "$SCANNER" daemon
-	procd_set_param respawn 3600 5 5
-	procd_set_param term_timeout 3
-	procd_set_param stdout 1
-	procd_set_param stderr 1
-	procd_set_param file /etc/config/pw2watchdog
-	procd_close_instance
+	# Start scanner daemon
+	if [ -x "$SCANNER" ]; then
+		"$SCANNER" daemon &
+		echo $! > "$PID_SCANNER"
+		logger -t pw2watchdog "scanner started (pid $!)"
+	fi
 }
 
-stop_service() {
-	logger -t pw2watchdog "Service stopped."
-	# Clean up static blackhole nft rule if it was left behind
+stop() {
+	logger -t pw2watchdog "Stopping service."
+
+	# Clean up static blackhole nft rule
 	local state_file="/var/run/pw2watchdog/state"
 	if [ -f "$state_file" ]; then
 		local handle
 		handle="$(grep 'STATIC_BH_HANDLE' "$state_file" | cut -d"'" -f2)"
 		if [ -n "$handle" ] && [ "$handle" != "unknown" ] && [ "$handle" != "" ]; then
 			nft delete rule inet passwall2 PSW2_MANGLE handle "$handle" 2>/dev/null && \
-				logger -t pw2watchdog "stop_service: removed blackhole nft handle $handle"
+				logger -t pw2watchdog "stop: removed blackhole nft handle $handle"
 		fi
 	fi
-	# Kill any remaining daemon processes
-	killall pw2watchdog.sh pw2watchdog-scanner.sh 2>/dev/null
+
+	# Kill by pid files first
+	for pidfile in "$PID_WATCHDOG" "$PID_SCANNER"; do
+		if [ -f "$pidfile" ]; then
+			local pid
+			pid="$(cat "$pidfile" 2>/dev/null)"
+			[ -n "$pid" ] && kill "$pid" 2>/dev/null
+			rm -f "$pidfile"
+		fi
+	done
+
+	# Fallback: killall
 	sleep 1
+	killall pw2watchdog.sh pw2watchdog-scanner.sh 2>/dev/null
 }
 
-service_triggers() {
-	procd_add_reload_trigger pw2watchdog
-}
-
-reload_service() {
+restart() {
 	stop
+	sleep 1
 	start
 }
