@@ -924,6 +924,8 @@ run_once() {
 }
 
 # Remove any leftover DROP rules from previous process (restart, crash, etc.)
+# In blackhole/rotate_all mode: keep PassWall2 on last node, only clean DROP.
+# In direct mode: remove DROP so traffic flows through WAN immediately.
 _cleanup_stale_drops() {
 	[ -n "$PW2_NFTABLE_NAME" ]    || return 0
 	[ -n "$PW2_NFTCHAIN_MANGLE" ] || return 0
@@ -935,6 +937,16 @@ _cleanup_stale_drops() {
 			&& log "startup: removed stale DROP rule (handle=$h)"
 	done
 	STATIC_BH_HANDLE=""
+	# In blackhole/rotate_all mode — keep current PassWall2 node as-is.
+	# The existing node may still be alive; scanner will verify on first cycle.
+	case "${FALLBACK_ACTION:-blackhole}" in
+	direct)
+		log "startup: fallback=direct, traffic flows via WAN until first scan"
+		;;
+	blackhole|rotate_all|*)
+		log "startup: fallback=${FALLBACK_ACTION:-blackhole}, keeping last active node until first scan"
+		;;
+	esac
 }
 
 daemon_loop() {
