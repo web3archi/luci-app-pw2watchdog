@@ -7,6 +7,7 @@ CONFIG_NAME="pw2watchdog"
 STATE_DIR="/var/run/pw2watchdog"
 CACHE_FILE="$STATE_DIR/latency_cache.json"
 LOCK_FILE="$STATE_DIR/scanner.lock"
+SCANNER_PID_FILE="$STATE_DIR/scanner.pid"
 
 mkdir -p "$STATE_DIR"
 
@@ -268,17 +269,23 @@ run_scan() {
 }
 
 daemon_loop() {
-	# Clean exit on SIGTERM/SIGINT (sent by procd on stop/restart)
-	trap 'release_lock; exit 0' TERM INT
+	# Clean exit on SIGTERM/SIGINT
+	trap 'rm -f "$SCANNER_PID_FILE"; release_lock; exit 0' TERM INT
+	# USR1 — immediate rescan (e.g. after subscription update)
+	trap 'log "USR1: immediate rescan requested"; kill_sleep=1' USR1
+	echo $$ > "$SCANNER_PID_FILE"
 	load_cfg
 	run_scan
 	while true; do
 		load_cfg
-		# Use background sleep + wait so SIGTERM interrupts the sleep cleanly
+		kill_sleep=0
+		# Use background sleep + wait so signals interrupt the sleep cleanly
 		sleep "$SCAN_INTERVAL" &
-		wait $!
-		# If we were interrupted (exit != 0) — exit gracefully
-		[ $? -eq 0 ] || { release_lock; exit 0; }
+		SLEEP_PID=$!
+		wait $SLEEP_PID
+		rc=$?
+		# SIGTERM/SIGINT — exit gracefully
+		[ $rc -eq 0 ] || [ "$kill_sleep" -eq 1 ] || { rm -f "$SCANNER_PID_FILE"; release_lock; exit 0; }
 		run_scan
 	done
 }

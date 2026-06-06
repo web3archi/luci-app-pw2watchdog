@@ -16,6 +16,7 @@
 #   pw2watchdog-subscribe.sh status     — show current hook state
 
 STATE_DIR="/var/run/pw2watchdog"
+SCANNER_PID_FILE="$STATE_DIR/scanner.pid"
 ENV_FILE="$STATE_DIR/env.static"
 SUB_STATE_FILE="$STATE_DIR/sub_update.json"
 CONFIG_NAME="pw2watchdog"
@@ -141,6 +142,14 @@ cmd_run() {
 
     info "subscription update finished: $count subscription(s) updated"
     _write_state "$ts" "$count" "ok"
+    # Signal scanner to rescan immediately with new node IDs
+    if [ -f "$SCANNER_PID_FILE" ]; then
+        local spid
+        spid="$(cat "$SCANNER_PID_FILE" 2>/dev/null)"
+        if [ -n "$spid" ] && kill -0 "$spid" 2>/dev/null; then
+            kill -USR1 "$spid" 2>/dev/null && info "signaled scanner (pid=$spid) to rescan after subscription update"
+        fi
+    fi
     return 0
 }
 
