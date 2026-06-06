@@ -71,19 +71,11 @@ stop() {
 		fi
 	fi
 
-	# Kill by pid files first
-	for pidfile in "$PID_WATCHDOG" "$PID_SCANNER"; do
-		if [ -f "$pidfile" ]; then
-			local pid
-			pid="$(cat "$pidfile" 2>/dev/null)"
-			[ -n "$pid" ] && kill "$pid" 2>/dev/null
-			rm -f "$pidfile"
-		fi
-	done
-
-	# Fallback: killall
-	sleep 1
+	# Kill all instances (by name — covers manually started processes too)
 	killall pw2watchdog.sh pw2watchdog-scanner.sh 2>/dev/null
+	sleep 1
+	# Clean up pid files
+	rm -f "$PID_WATCHDOG" "$PID_SCANNER"
 }
 
 restart() {
