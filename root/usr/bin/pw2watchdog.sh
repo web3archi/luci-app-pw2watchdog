@@ -950,7 +950,9 @@ _cleanup_stale_drops() {
 }
 
 daemon_loop() {
-	# On first start — clean up any DROP rules left by previous process
+	# On first start — load env and cfg, then clean up stale DROP rules
+	load_env
+	load_cfg
 	_cleanup_stale_drops
 	while true; do
 		run_once
