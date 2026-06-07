@@ -346,12 +346,23 @@ _restart_with_blackhole() {
 	fi
 
 	# 5. Remove DROP — always, even on timeout
-	nft delete rule "$nft_table" "$nft_chain" handle "$handle" 2>/dev/null
-	if [ $? -eq 0 ]; then
-		log "transit blackhole: DROP rule removed (handle=$handle)"
+	# PassWall2 restart recreates the chain so the handle may have changed.
+	# Re-read the current handle first; fall back to the saved one if not found.
+	local cur_handle
+	cur_handle="$(nft -a list chain $nft_table $nft_chain 2>/dev/null \
+		| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1; exit}')"
+	[ -z "$cur_handle" ] && cur_handle="$handle"
+
+	if [ -n "$cur_handle" ]; then
+		nft delete rule "$nft_table" "$nft_chain" handle "$cur_handle" 2>/dev/null
+		if [ $? -eq 0 ]; then
+			log "transit blackhole: DROP rule removed (handle=$cur_handle)"
+		else
+			log "transit blackhole: WARNING — failed to remove DROP rule handle=$cur_handle"
+			log "transit blackhole: manual fix: nft delete rule $nft_table $nft_chain handle $cur_handle"
+		fi
 	else
-		log "transit blackhole: WARNING — failed to remove DROP rule handle=$handle"
-		log "transit blackhole: manual fix: nft delete rule $nft_table $nft_chain handle $handle"
+		log "transit blackhole: no DROP rule found in chain, already removed or chain was recreated cleanly"
 	fi
 
 	return 0
@@ -773,8 +784,10 @@ should_switch() {
 		;;
 	esac
 
+	# If current node is dead (latency=0) — skip suppression, switch immediately
 	if [ "$LAST_SWITCH" -gt 0 ] \
-	&& [ $((now - LAST_SWITCH)) -lt "$MIN_SWITCH_INTERVAL" ]; then
+	&& [ $((now - LAST_SWITCH)) -lt "$MIN_SWITCH_INTERVAL" ] \
+	&& [ "${CURRENT_LATENCY:-0}" -gt 0 ]; then
 		LAST_REASON="suppressed_min_switch_interval"
 		return 1
 	fi
