@@ -263,8 +263,13 @@ run_scan() {
 	log "scan completed in ${elapsed}s"
 
 	# Persist last scan timestamp for Overview page
-	sed -i "s/LAST_SCAN_TS='[^']*'/LAST_SCAN_TS='$ts_end'/" "$STATE_FILE" 2>/dev/null \
-		|| echo "LAST_SCAN_TS='$ts_end'" >> "$STATE_FILE"
+	if [ -f "$STATE_FILE" ]; then
+		if grep -q 'LAST_SCAN_TS' "$STATE_FILE" 2>/dev/null; then
+			sed -i "s/LAST_SCAN_TS=[0-9]*/LAST_SCAN_TS=$ts_end/" "$STATE_FILE" 2>/dev/null
+		else
+			echo "LAST_SCAN_TS=$ts_end" >> "$STATE_FILE"
+		fi
+	fi
 
 	# Trigger B: scheduled candidate rotation (auto mode only)
 	rotate_candidates_if_auto

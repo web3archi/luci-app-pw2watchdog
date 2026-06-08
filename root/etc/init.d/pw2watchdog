@@ -42,7 +42,10 @@ start() {
 		if [ "$on_boot" = "1" ]; then
 			boot_delay="$(uci -q get pw2watchdog.advanced.sub_boot_delay)"
 			# Minimum delay 120s — ensures scanner completes first cycle before subscribe
-			[ -n "$boot_delay" ] && [ "$boot_delay" -ge 120 ] 2>/dev/null || boot_delay=120
+			case "$boot_delay" in
+				''|*[!0-9]*) boot_delay=120 ;;
+				*) [ "$boot_delay" -ge 120 ] || boot_delay=120 ;;
+			esac
 			logger -t pw2watchdog "sub_update_on_boot=1, subscription update delayed ${boot_delay}s"
 			( sleep "$boot_delay"; "$SUBSCRIBE" run ) &
 		fi
