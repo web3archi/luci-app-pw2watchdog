@@ -368,9 +368,13 @@ return view.extend({
 		/* ── Runtime renderer ─────────────────────────────────────────── */
 		function renderRuntime(obj) {
 			var currentNodeId      = uci.get('passwall2', 'rulenode', 'default_node') || obj.current_node || '-';
-			var bestNodeId         = obj.best_node    || '-';
+			// best_alt_node: best candidate != current node (set by watchdog choose_target)
+			// Falls back to best_node if alt is absent (single-candidate edge case)
+			var bestNodeId         = obj.best_node     || '-';
+			var bestAltNodeId      = obj.best_alt_node  || '';
 			var currentMeta        = getNodeMeta(nodeIndex, currentNodeId);
 			var bestMeta           = getNodeMeta(nodeIndex, bestNodeId);
+			var bestAltMeta        = bestAltNodeId ? getNodeMeta(nodeIndex, bestAltNodeId) : null;
 			var nodeSelectionLive  = obj.node_selection  || nodeSelectionMode;
 			var fallbackActionLive = obj.fallback_action || fallbackActionCfg;
 			var isAuto             = (nodeSelectionLive === 'auto');
@@ -427,11 +431,28 @@ return view.extend({
 				_('Currently active PassWall2 default node with its measured latency.')
 			));
 
-			/* 5. Best candidate node */
+			/* 5. Best candidate node
+			 * Show best_alt: best candidate that is NOT the current active node.
+			 * If no alternative exists (only one candidate and it is the current node),
+			 * show a "only candidate" note instead of the current node redundantly.
+			 */
+			var bestCandidateDisplay, bestCandidateLatency, bestCandidateDesc;
+			if (bestAltMeta) {
+				// Normal case: there is at least one candidate different from current
+				bestCandidateDisplay  = makeNodeValue(bestAltMeta, obj.best_alt_latency);
+				bestCandidateDesc     = _('Best available candidate node (excluding the currently active node), with its measured latency.');
+			} else if (bestMeta && bestNodeId !== '-') {
+				// Edge case: only candidate is the current node
+				bestCandidateDisplay  = makeNodeValue(bestMeta, obj.best_latency);
+				bestCandidateDesc     = _('Only candidate — no alternative nodes available at this time.');
+			} else {
+				bestCandidateDisplay  = makeSimpleValue('-');
+				bestCandidateDesc     = _('Best candidate from the last watchdog cycle, with its measured latency.');
+			}
 			runtimeTable.appendChild(makeRow(
 				_('Best candidate node'),
-				makeNodeValue(bestMeta, obj.best_latency),
-				_('Best candidate from the last watchdog cycle, with its measured latency.')
+				bestCandidateDisplay,
+				bestCandidateDesc
 			));
 
 			/* 6. Last node switch */

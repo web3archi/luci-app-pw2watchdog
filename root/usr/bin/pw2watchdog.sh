@@ -262,6 +262,10 @@ write_status() {
 	json_add_string best_node             "${best:-}"
 	json_add_string best_label            "$(node_label "$best")"
 	json_add_int    best_latency          "${best_latency:-0}"
+	# best_alt: best candidate != current node, shown in Overview as "Best candidate node"
+	json_add_string best_alt_node         "${BEST_ALT_NODE:-}"
+	json_add_string best_alt_label        "$(node_label "$BEST_ALT_NODE")"
+	json_add_int    best_alt_latency      "${BEST_ALT_LATENCY:-0}"
 	json_add_string target_node           "${target:-}"
 	json_add_string target_label          "$(node_label "$target")"
 	json_add_string last_target           "${LAST_TARGET:-}"
@@ -501,6 +505,8 @@ choose_target() {
 
 	BEST_NODE=""
 	BEST_LATENCY=999999
+	BEST_ALT_NODE=""       # best candidate != current node (for UI display only)
+	BEST_ALT_LATENCY=999999
 	CURRENT_NODE="$1"
 	CURRENT_LATENCY=0
 
@@ -527,6 +533,15 @@ choose_target() {
 			BEST_LATENCY="$latency"
 			BEST_NODE="$node"
 			all_failed=0
+		fi
+
+		# Track best alternative: best candidate that is not the current active node
+		if [ "$node" != "$CURRENT_NODE" ] \
+		&& [ "$latency" -gt 0 ] \
+		&& [ "$latency" -le "$MAX_LATENCY" ] \
+		&& [ "$latency" -lt "$BEST_ALT_LATENCY" ]; then
+			BEST_ALT_LATENCY="$latency"
+			BEST_ALT_NODE="$node"
 		fi
 	done
 
@@ -555,6 +570,23 @@ choose_target() {
 
 	LAST_BEST_NODE="$BEST_NODE"
 	LAST_BEST_LATENCY="$BEST_LATENCY"
+
+	# If BEST_ALT_NODE was not found in regular loop (e.g. single candidate = current),
+	# try to find it from the updated CANDIDATES after emergency rotate
+	if [ -z "$BEST_ALT_NODE" ]; then
+		for node in $CANDIDATES; do
+			is_excluded_node "$node" && continue
+			[ "$node" = "$CURRENT_NODE" ] && continue
+			latency="$(read_cache_latency "$node")"
+			[ -n "$latency" ] || latency=0
+			if [ "$latency" -gt 0 ] \
+			&& [ "$latency" -le "$MAX_LATENCY" ] \
+			&& [ "$latency" -lt "$BEST_ALT_LATENCY" ]; then
+				BEST_ALT_LATENCY="$latency"
+				BEST_ALT_NODE="$node"
+			fi
+		done
+	fi
 
 	if [ -n "$BEST_NODE" ]; then
 		TARGET_NODE="$BEST_NODE"
