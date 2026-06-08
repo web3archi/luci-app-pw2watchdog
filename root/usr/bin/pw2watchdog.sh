@@ -217,6 +217,17 @@ load_state() {
 }
 
 save_state() {
+	# LAST_SCAN_TS is written by pw2watchdog-scanner.sh (a separate process).
+	# We must NOT overwrite it with our stale in-memory value.
+	# Re-read the freshest value from the state file right before writing.
+	local fresh_scan_ts
+	fresh_scan_ts="$(grep -m1 '^LAST_SCAN_TS=' "$STATE_FILE" 2>/dev/null \
+		| cut -d= -f2)"
+	# Keep whichever is larger: in-memory (from previous load) or on-disk (scanner-written)
+	if [ -n "$fresh_scan_ts" ] && [ "$fresh_scan_ts" -gt "${LAST_SCAN_TS:-0}" ] 2>/dev/null; then
+		LAST_SCAN_TS="$fresh_scan_ts"
+	fi
+
 	cat > "$STATE_FILE" <<EOFSTATE
 LAST_SWITCH=${LAST_SWITCH:-0}
 LAST_TARGET='${LAST_TARGET:-}'
