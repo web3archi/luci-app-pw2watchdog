@@ -83,10 +83,14 @@ function renderHwBlock(status) {
 		: (cpuThreads > 0 ? cpuThreads + ' threads' : 'unknown CPU');
 
 	function makeBox(color, bg, border, label, active) {
+		/* Inactive boxes: very light tint of their own color so Medium=yellowish, Strong=greenish */
+		var inactiveBg = active ? bg :
+			(border === '#ffe08a' ? '#fffef5' :
+			 (border === '#b7e3c1' ? '#f5fbf7' : '#fdf5f5'));
 		return E('div', {
 			'style': 'flex:1;padding:2px 8px;border:2px solid ' + border + ';' +
-			         'border-radius:5px;background:' + (active ? bg : '#f8f9fa') + ';' +
-			         'color:' + (active ? color : '#aaa') + ';text-align:center;'
+			         'border-radius:5px;background:' + (active ? bg : inactiveBg) + ';' +
+			         'color:' + (active ? color : '#bbb') + ';text-align:center;'
 		}, [
 			E('div', { 'style': 'font-weight:700;font-size:0.9em;' }, label),
 			active ? E('div', { 'style': 'font-size:0.75em;margin-top:2px;word-break:break-word;' }, cpuLine) : ''
@@ -102,7 +106,7 @@ function renderHwBlock(status) {
 			         'background:' + levelBg + ';border:1.5px solid ' + levelBorder + ';' +
 			         'color:' + levelColor + ';font-weight:700;font-size:1em;text-align:center;'
 		}, String(recommended)),
-		E('span', { 'style': 'font-weight:600;font-size:1em;color:#222;' },
+		E('span', { 'style': 'font-weight:600;font-size:1em;color:#333;' },
 			_('Recommended max candidates — based on check_interval and measured per-node overhead on this device.')
 		)
 	]);
