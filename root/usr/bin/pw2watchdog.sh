@@ -9,6 +9,13 @@
 #   /usr/bin/pw2watchdog-env.sh  — service discovery (paths, PassWall2 parameters, HW)
 #   /lib/functions.sh            — OpenWrt UCI helpers
 #   /usr/share/libubox/jshn.sh   — JSON helpers
+#
+# v0.3.0 changes:
+#   - rotate_all: rewritten as circular buffer (offset +1 per cycle, not +N)
+#   - rotate_all: skip min_switch_interval suppression
+#   - rotate_all: logged as separate action in history
+#   - PassWall2 health check: detect dead PW2 process and optionally restart it
+#   - state/status: LAST_PW2_RESTART timestamp
 
 . /lib/functions.sh
 . /usr/share/libubox/jshn.sh
@@ -187,6 +194,7 @@ load_cfg() {
 	config_get FALLBACK_ACTION               main fallback_action               'blackhole'
 	config_get ROTATE_MAX_ROUNDS             main rotate_max_rounds             '3'
 	config_get ROTATE_FINAL_ACTION           main rotate_final_action           'blackhole'
+	config_get PW2_RESTART_ON_FAILURE        advanced pw2_restart_on_failure    '0'
 	config_get INITIAL_DEFAULT_NODE          main initial_default_node          ''
 	config_list_foreach main candidate_node append_candidate
 	config_list_foreach main exclude_node   append_exclude_node
@@ -202,8 +210,9 @@ load_state() {
 	LAST_BEST_NODE=""
 	LAST_BEST_LATENCY=""
 	STATIC_BH_HANDLE=""   # handle of the static blackhole nft DROP rule
-	ROTATE_ROUND=0        # current rotation round counter
-	ROTATE_OFFSET=0       # current offset into sorted node list
+	ROTATE_ROUND=0        # current rotation round (circular buffer full-cycle counter)
+	ROTATE_OFFSET=0       # current position in the circular node buffer (advances by 1 per cycle)
+	LAST_PW2_RESTART=0   # unix timestamp of last PassWall2 restart triggered by watchdog
 	[ -f "$STATE_FILE" ] && . "$STATE_FILE"
 }
 
@@ -218,6 +227,7 @@ STATIC_BH_HANDLE='${STATIC_BH_HANDLE:-}'
 ROTATE_ROUND=${ROTATE_ROUND:-0}
 ROTATE_OFFSET=${ROTATE_OFFSET:-0}
 LAST_SCAN_TS=${LAST_SCAN_TS:-0}
+LAST_PW2_RESTART=${LAST_PW2_RESTART:-0}
 EOFSTATE
 }
 
@@ -257,6 +267,7 @@ write_status() {
 	json_add_int    ram_total_mb          "${RAM_TOTAL_MB:-0}"
 	json_add_string running               "${STATUS_RUNNING:-false}"
 	json_add_int    last_scan_ts          "${LAST_SCAN_TS:-0}"
+	json_add_int    last_pw2_restart      "${LAST_PW2_RESTART:-0}"
 	json_dump > "$STATUS_FILE"
 }
 
@@ -603,18 +614,31 @@ _static_blackhole_remove() {
 }
 
 # ---------------------------------------------------------------------------
-# Rotate-all fallback: cycle through all non-excluded nodes from cache
+# rotate_all fallback: circular buffer over all live non-excluded nodes.
+#
+# Algorithm (v0.3):
+#   - Build list of all live nodes from latency_cache.json, sorted by latency.
+#   - ROTATE_OFFSET is a cursor (0..total-1) into that list.
+#   - Each call advances the cursor by exactly 1 step (not by recommended_candidates).
+#   - Active pool = window of recommended_candidates nodes starting at cursor,
+#     wrapping around the end of the list (circular via doubled list trick).
+#   - When cursor wraps past total → ROTATE_ROUND++.
+#   - After max_rounds full rotations → apply final action.
+#
+# Granularity: if 1 proxy died we try 1 new candidate each cycle;
+# if N died we naturally fill the pool with fresh nodes over N cycles.
 # ---------------------------------------------------------------------------
-_rotate_all_next_group() {
+_rotate_all_step() {
 	local cache_file="$STATE_DIR/latency_cache.json"
 	[ -f "$cache_file" ] || { log "rotate_all: no cache file"; return 1; }
 
 	local recommended="${RECOMMENDED_CANDIDATES:-3}"
 	[ "$recommended" -lt 1 ] && recommended=3
 
-	# Get all live nodes sorted by latency (excluding excluded)
-	local all_sorted
-	all_sorted="$(awk -v max="$MAX_LATENCY" '
+	# --- Build sorted live-node list from cache ---
+	# Live = latency > 0, latency <= MAX_LATENCY, status != red
+	local all_live
+	all_live="$(awk -v max="$MAX_LATENCY" '
 		{
 			line = $0
 			if (match(line, /"[^"]+":/) == 0) next
@@ -632,137 +656,131 @@ _rotate_all_next_group() {
 		}
 	' "$cache_file" | sort -n | awk '{print $2}')"
 
-	[ -n "$all_sorted" ] || { log "rotate_all: no live nodes in cache"; return 1; }
+	[ -n "$all_live" ] || { log "rotate_all: no live nodes in cache"; return 1; }
 
-	# Filter excluded nodes
-	local filtered="" node
-	for node in $all_sorted; do
+	# --- Filter excluded nodes ---
+	local live="" node
+	for node in $all_live; do
 		is_excluded_node "$node" && continue
-		filtered="$filtered $node"
+		live="$live $node"
 	done
-	filtered="${filtered# }"
-	[ -n "$filtered" ] || { log "rotate_all: all nodes excluded"; return 1; }
+	live="${live# }"
+	[ -n "$live" ] || { log "rotate_all: all nodes excluded"; return 1; }
 
 	local total
-	total="$(echo "$filtered" | wc -w)"
+	total="$(echo "$live" | wc -w)"
 
-	# Pick group starting at ROTATE_OFFSET
+	# --- Circular cursor: detect full-round wrap ---
+	# If cursor is at or past the end, we just completed a full loop.
 	local offset="${ROTATE_OFFSET:-0}"
-	[ "$offset" -ge "$total" ] && offset=0
-
-	# Extract next N nodes from offset position
-	local group
-	group="$(echo "$filtered" | tr ' ' '\n' | tail -n +"$((offset + 1))" | head -n "$recommended" | tr '\n' ' ')"
-	group="${group% }"
-
-	# If group is empty (offset at end), wrap around
-	if [ -z "$group" ]; then
+	if [ "$offset" -ge "$total" ]; then
 		offset=0
-		group="$(echo "$filtered" | tr ' ' '\n' | head -n "$recommended" | tr '\n' ' ')"
-		group="${group% }"
 		ROTATE_ROUND=$((ROTATE_ROUND + 1))
-		log "rotate_all: wrapped to round $ROTATE_ROUND offset=0"
-	else
-		# Check if we've advanced past recommended boundary → new round
-		local next_offset=$((offset + recommended))
-		if [ "$next_offset" -ge "$total" ]; then
-			ROTATE_ROUND=$((ROTATE_ROUND + 1))
-			ROTATE_OFFSET=0
-			log "rotate_all: completed round $ROTATE_ROUND (total=$total)"
-		else
-			ROTATE_OFFSET=$next_offset
-			log "rotate_all: round=$ROTATE_ROUND offset=$ROTATE_OFFSET/$total group=[$group]"
-		fi
+		log "rotate_all: full round completed → round=$ROTATE_ROUND total=$total"
 	fi
 
-	# Best node = first in group (already sorted by latency)
-	local best_in_group
-	best_in_group="$(echo "$group" | awk '{print $1}')"
+	# --- Build active pool via circular window ---
+	# Double the list so we can extract a contiguous window even when it wraps.
+	local pool best_node
+	pool="$(printf '%s\n%s\n' "$live" "$live" \
+		| tr ' ' '\n' \
+		| grep -v '^$' \
+		| tail -n +"$((offset + 1))" \
+		| head -n "$recommended" \
+		| tr '\n' ' ')"
+	pool="${pool% }"
 
-	[ -n "$best_in_group" ] || return 1
+	# Best node = first in pool (lowest latency at cursor position)
+	best_node="$(echo "$pool" | awk '{print $1}')"
+	[ -n "$best_node" ] || { log "rotate_all: empty pool (offset=$offset total=$total)"; return 1; }
 
-	log "rotate_all: switching to best_in_group=$best_in_group (candidates: $group)"
+	# Advance cursor by 1 for the next call
+	ROTATE_OFFSET=$((offset + 1))
 
-	# Update candidates in UCI + memory
+	log "rotate_all: round=$ROTATE_ROUND offset=$offset/$total best=$best_node pool=[$pool]"
+
+	# --- Update UCI candidates + in-memory CANDIDATES ---
 	uci -q delete "${CONFIG_NAME}.main.candidate_node"
-	for node in $group; do
+	for node in $pool; do
 		uci -q add_list "${CONFIG_NAME}.main.candidate_node=$node"
 	done
 	uci commit "$CONFIG_NAME"
-	CANDIDATES="$group"
+	CANDIDATES="$pool"
 
-	# Override target
-	TARGET_NODE="$best_in_group"
-	BEST_NODE="$best_in_group"
+	# Set target for this cycle
+	TARGET_NODE="$best_node"
+	BEST_NODE="$best_node"
 	return 0
 }
 
 # ---------------------------------------------------------------------------
-# Fallback policy when all_failed
+# Fallback policy — called when all current candidates are dead (all_failed).
 #
-# We do NOT use PassWall2 _blackhole/_direct as target nodes.
-# default_node is not changed. should_switch will return false — no restart.
-#
-# blackhole: insert static nft DROP (without restarting PassWall2)
-# direct:    do nothing — traffic flows directly
+# rotate_all: step the circular buffer, switch to the next best node.
+#             After max_rounds full rotations through the pool → final action.
+# blackhole:  insert static nft DROP rule (no PW2 restart, traffic blocked).
+# direct:     do nothing — traffic flows directly via WAN.
 # ---------------------------------------------------------------------------
 apply_fallback_policy() {
 	[ "$TARGET_REASON" = "all_failed" ] || return 0
 
+	local final="${ROTATE_FINAL_ACTION:-blackhole}"
+
 	case "${FALLBACK_ACTION:-blackhole}" in
 	rotate_all)
-		# Remove static blackhole if it was active
+		# Remove any stale static blackhole before attempting a live switch
 		[ -n "$STATIC_BH_HANDLE" ] && _static_blackhole_remove
 
 		local max_rounds="${ROTATE_MAX_ROUNDS:-3}"
-		local final="${ROTATE_FINAL_ACTION:-blackhole}"
 
-		# Check if we've exhausted all rotation rounds
+		# Guard: if previous cycle completed max_rounds — apply final action now.
+		# ROTATE_ROUND is incremented inside _rotate_all_step on wrap, so we check
+		# here before stepping to avoid one extra rotation after the limit.
 		if [ "${ROTATE_ROUND:-0}" -ge "$max_rounds" ]; then
-			log "rotate_all: exhausted $max_rounds rounds, applying final action=$final"
+			log "rotate_all: exhausted $max_rounds rounds → applying final action=$final"
 			ROTATE_ROUND=0
 			ROTATE_OFFSET=0
-			case "$final" in
-			direct)
-				TARGET_REASON="fallback_direct_all_failed"
-				;;
-			blackhole|*)
-				_static_blackhole_insert
-				TARGET_REASON="fallback_blackhole_all_failed"
-				;;
-			esac
+			_apply_final_action "$final"
+			return 0
+		fi
+
+		# Step the circular buffer
+		if _rotate_all_step; then
+			TARGET_REASON="rotate_all"
 		else
-			if _rotate_all_next_group; then
-				TARGET_REASON="rotate_all"
-			else
-				# No live nodes anywhere — apply final action
-				log "rotate_all: no live nodes, applying final action=$final"
-				ROTATE_ROUND=0
-				ROTATE_OFFSET=0
-				case "$final" in
-				direct)
-					TARGET_REASON="fallback_direct_all_failed"
-					;;
-				blackhole|*)
-					_static_blackhole_insert
-					TARGET_REASON="fallback_blackhole_all_failed"
-					;;
-				esac
-			fi
+			# No live nodes at all in the cache — apply final immediately
+			log "rotate_all: no live nodes anywhere → applying final action=$final"
+			ROTATE_ROUND=0
+			ROTATE_OFFSET=0
+			_apply_final_action "$final"
 		fi
 		;;
 	direct)
-		# If static blackhole was previously active — remove it
+		# Remove stale static blackhole if present, then let traffic flow via WAN
 		[ -n "$STATIC_BH_HANDLE" ] && {
-			log "fallback: switching from blackhole to direct, removing static DROP"
+			log "fallback: removing stale blackhole, switching to direct"
 			_static_blackhole_remove
 		}
 		ROTATE_ROUND=0; ROTATE_OFFSET=0
 		TARGET_REASON="fallback_direct_all_failed"
 		;;
 	blackhole|*)
-		# Insert static DROP if not already active
+		# Insert static DROP if not already active; reset rotation counters
 		ROTATE_ROUND=0; ROTATE_OFFSET=0
+		_static_blackhole_insert
+		TARGET_REASON="fallback_blackhole_all_failed"
+		;;
+	esac
+}
+
+# Helper: apply final action (direct or blackhole) and set TARGET_REASON.
+_apply_final_action() {
+	local action="$1"
+	case "$action" in
+	direct)
+		TARGET_REASON="fallback_direct_all_failed"
+		;;
+	blackhole|*)
 		_static_blackhole_insert
 		TARGET_REASON="fallback_blackhole_all_failed"
 		;;
@@ -785,13 +803,21 @@ should_switch() {
 		;;
 	esac
 
-	# If current node is dead (latency=0) — skip suppression, switch immediately
-	if [ "$LAST_SWITCH" -gt 0 ] \
-	&& [ $((now - LAST_SWITCH)) -lt "$MIN_SWITCH_INTERVAL" ] \
-	&& [ "${CURRENT_LATENCY:-0}" -gt 0 ]; then
-		LAST_REASON="suppressed_min_switch_interval"
-		return 1
-	fi
+	# rotate_all is a failover action — never suppress it by min_switch_interval.
+	# When all candidates are dead, we must switch immediately to restore connectivity.
+	# (Normal best_latency switches are still subject to suppression below.)
+	case "$TARGET_REASON" in
+	rotate_all) : ;;
+	*)
+		# If current node is dead (latency=0) — also skip suppression, switch immediately
+		if [ "$LAST_SWITCH" -gt 0 ] \
+		&& [ $((now - LAST_SWITCH)) -lt "$MIN_SWITCH_INTERVAL" ] \
+		&& [ "${CURRENT_LATENCY:-0}" -gt 0 ]; then
+			LAST_REASON="suppressed_min_switch_interval"
+			return 1
+		fi
+		;;
+	esac
 
 	case "$TARGET_REASON" in
 	best_latency)
@@ -811,6 +837,49 @@ should_switch() {
 	esac
 
 	return 0
+}
+
+# ---------------------------------------------------------------------------
+# PassWall2 health check.
+#
+# Checks whether the PassWall2 daemon is alive by asking its init script for
+# status.  If it is not running and pw2_restart_on_failure=1 in UCI advanced
+# settings, the watchdog restarts PW2 once and records the timestamp.
+#
+# This is called at the top of every run_once cycle so that latency failures
+# caused by a dead PassWall2 are correctly attributed rather than blamed on
+# individual proxy nodes.
+# ---------------------------------------------------------------------------
+_check_passwall_health() {
+	# Guard: init script must be known and executable
+	[ -n "$PASSWALL_INIT" ] || return 0
+	[ -x "$PASSWALL_INIT" ]  || return 0
+
+	# Ask the init script if the service is running (exit 0 = running)
+	if "$PASSWALL_INIT" status >/dev/null 2>&1; then
+		return 0  # PW2 is alive, nothing to do
+	fi
+
+	# PW2 is not running
+	log "passwall2 health check: service not running (init=$PASSWALL_INIT)"
+
+	if [ "${PW2_RESTART_ON_FAILURE:-0}" != "1" ]; then
+		log "passwall2 health check: auto-restart disabled, skipping"
+		return 0
+	fi
+
+	# Restart PW2 and record the timestamp
+	log "passwall2 health check: restarting PassWall2 ..."
+	"$PASSWALL_INIT" restart >/dev/null 2>&1
+	local rc=$?
+	LAST_PW2_RESTART="$(date +%s)"
+	save_state
+
+	if [ $rc -eq 0 ]; then
+		log "passwall2 health check: restart OK (ts=$LAST_PW2_RESTART)"
+	else
+		log "passwall2 health check: restart FAILED (rc=$rc ts=$LAST_PW2_RESTART)"
+	fi
 }
 
 # ---------------------------------------------------------------------------
@@ -852,6 +921,14 @@ run_once() {
 	}
 
 	load_state
+
+	# ---------------------------------------------------------------------------
+	# PassWall2 health check.
+	# Verify that PassWall2 init script is running before we do any latency work.
+	# If PW2 is dead and pw2_restart_on_failure=1 — restart it once and record the
+	# timestamp. This prevents the watchdog from blaming proxies for a dead PW2.
+	# ---------------------------------------------------------------------------
+	_check_passwall_health
 
 	current="$(get_default_node)"
 	[ -n "$current" ] || {
@@ -922,10 +999,13 @@ run_once() {
 	fi
 
 	LAST_TARGET="$TARGET_NODE"
-	# Always use current TARGET_REASON for fallback actions; preserve LAST_REASON only for stay
+	# Map TARGET_REASON to history action.
+	# rotate_all: node was switched in UCI/CANDIDATES but should_switch=false
+	# means PassWall2 is already on that node — record as rotate_all, not stay.
 	case "$TARGET_REASON" in
 	fallback_blackhole_all_failed) LAST_REASON="$TARGET_REASON"; action="fallback_blackhole"; history_node="$current" ;;
 	fallback_direct_all_failed)    LAST_REASON="$TARGET_REASON"; action="fallback_direct";    history_node="$current" ;;
+	rotate_all)                    LAST_REASON="$TARGET_REASON"; action="rotate_all";         history_node="$TARGET_NODE" ;;
 	*)                             LAST_REASON="${LAST_REASON:-$TARGET_REASON}"; action="stay"; history_node="$current" ;;
 	esac
 

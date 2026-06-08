@@ -32,8 +32,19 @@ When all candidate nodes exceed `max_latency` or fail:
 
 - **Blackhole** (recommended) — inserts a static `nft drop` rule into the PassWall2 mangle chain. Proxy traffic is dropped. No unproxied leaks. The rule is removed as soon as a healthy node is found.
 - **Direct** — does nothing. PassWall2 continues with whatever node is currently set.
+- **Rotate** — cycles through all live nodes from the scanner cache using a circular buffer. Each watchdog cycle advances the cursor by exactly **one** node position. The active candidate pool fills to `recommended_candidates` nodes starting at the cursor (wrapping around if needed), always picking the lowest-latency nodes in that window. After the configured number of full rotations through the entire live-node list, the **final action** (Blackhole or Direct) is applied and the rotation counter resets.
+
+  > Why one step at a time? If one proxy died, one new candidate is tried per cycle. If three died, new candidates fill in naturally over the next few cycles. No group-jumping, no edge cases at list boundaries.
 
 > The watchdog does **not** use `_blackhole` or `_direct` as PassWall2 node targets. The blackhole is implemented as a real nftables rule, independent of node switching.
+
+### PassWall2 health check
+
+At the start of every watchdog cycle, the watchdog checks whether the PassWall2 init script reports the service as running. If PassWall2 is found dead:
+
+- A `passwall2 health check: service not running` message is logged.
+- If **Auto-restart PassWall2 on failure** is enabled in Advanced Settings, PassWall2 is restarted once and the timestamp is recorded in state (`LAST_PW2_RESTART`) and shown in the Settings page.
+- This prevents false "all candidates dead" events that are actually caused by a crashed PassWall2 process rather than failing proxy nodes.
 
 ### Transit Blackhole
 

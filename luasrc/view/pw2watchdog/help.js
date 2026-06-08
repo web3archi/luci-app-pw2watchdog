@@ -52,6 +52,7 @@ return view.extend({
 					_('When all candidates exceed max_latency or fail, the fallback action is triggered.'),
 					_('Blackhole inserts a static nft drop rule into the PassWall2 mangle chain. Proxy-bound traffic is dropped until a healthy node is found. No unproxied leaks. Strongly recommended.'),
 					_('Direct does nothing — PassWall2 continues with the current node. Traffic may pass unproxied if PassWall2 itself is in a degraded state.'),
+					_('Rotate cycles through all live nodes from the scanner cache one by one (circular buffer). Each watchdog cycle moves the cursor by one node, regardless of how many candidates died. The active pool (shown in Candidates) always fills to the recommended size with the best available nodes starting at the cursor position. After the configured number of full rotations, the final action (blackhole or direct) is applied.'),
 					_('The watchdog does not use _blackhole or _direct as PassWall2 node targets. The blackhole is a real nftables rule, independent of node switching.')
 				]),
 
@@ -65,7 +66,8 @@ return view.extend({
 					_('All Advanced Settings fields are optional. Leave them blank — pw2watchdog-env.sh will auto-detect all paths and parameters from the running PassWall2 installation.'),
 					_('Fill in a field only if auto-detection fails for that specific value on your setup. Check pw2watchdog-env.sh check output to see what failed.'),
 					_('Reset advanced to auto-detect clears all path overrides. Subscription settings are not affected by this button.'),
-					_('The env cache has a 1-hour TTL. After changing Advanced Settings or updating PassWall2, run pw2watchdog-env.sh resolve --force to apply immediately.')
+					_('The env cache has a 1-hour TTL. After changing Advanced Settings or updating PassWall2, run pw2watchdog-env.sh resolve --force to apply immediately.'),
+					_('Auto-restart PassWall2 on failure: when enabled, the watchdog checks at the start of every cycle whether PassWall2 is running. If it is not, PassWall2 is restarted once and the timestamp is recorded. This prevents false “all candidates dead” events caused by a crashed PassWall2 process. The last restart time is shown in Advanced Settings under the checkbox.')
 				]),
 
 				renderNote(_('Subscription auto-update'), [

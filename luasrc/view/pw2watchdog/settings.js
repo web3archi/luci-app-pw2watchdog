@@ -388,6 +388,49 @@ return view.extend({
 		o.depends('sub_update_on_boot', '1');
 		o.description = _('Delay in seconds before running subscription update on boot. Minimum: 120 s — allows the scanner to complete its first cycle and populate the node cache before nodes are replaced by a subscription update. Values below 120 are ignored and 120 is used instead.');
 
+		/* --- PassWall2 health check --- */
+		o = adv.option(form.Flag, 'pw2_restart_on_failure', _('Auto-restart PassWall2 on failure'));
+		o.default     = '0';
+		o.rmempty     = false;
+		o.description = _(
+			'If PassWall2 is found not running at the start of a watchdog cycle, restart it automatically. ' +
+			'Prevents false “all candidates dead” failures caused by a crashed PassWall2 process. ' +
+			'The restart timestamp is recorded below.'
+		);
+
+		/* Read-only: last PW2 restart timestamp from status.json */
+		var pw2RestartRow = adv.option(form.DummyValue, '_pw2_restart_ts', _('Last watchdog-triggered PW2 restart'));
+		pw2RestartRow.depends('pw2_restart_on_failure', '1');
+		pw2RestartRow.cfgvalue = function() {
+			return poll.call(this, 0) || '—';
+		};
+		pw2RestartRow.render = function(section_id) {
+			var self = this;
+			var el = E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title' }, _('Last watchdog-triggered PW2 restart')),
+				E('div',  { 'class': 'cbi-value-field', 'id': 'pw2-last-restart-ts' }, '—')
+			]);
+			/* Populate from cached status.json (already fetched by the Overview poll, same path) */
+			var statusPath = L.env.requestpath
+				? L.env.requestpath.filter(function(p){ return p !== 'luci'; }).join('/')
+				: '';
+			L.Request.get('/cgi-bin/luci/admin/services/pw2watchdog/status')
+				.then(function(res) {
+					try {
+						var st = JSON.parse(res.text());
+						var ts = parseInt(st.last_pw2_restart || '0', 10);
+						var field = document.getElementById('pw2-last-restart-ts');
+						if (field) {
+							field.textContent = ts > 0
+								? new Date(ts * 1000).toLocaleString()
+								: '— (never)';
+						}
+					} catch(e) {}
+				})
+				.catch(function() {});
+			return el;
+		};
+
 		/* --- Actions --- */
 		var actions = m.section(form.NamedSection, '__actions__', 'dummy');
 		var self = this;
