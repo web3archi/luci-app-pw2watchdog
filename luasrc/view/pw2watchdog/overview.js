@@ -106,7 +106,7 @@ function renderHwBlock(status) {
 			         'background:' + levelBg + ';border:1.5px solid ' + levelBorder + ';' +
 			         'color:' + levelColor + ';font-weight:700;font-size:1em;text-align:center;'
 		}, String(recommended)),
-		E('span', { 'style': 'font-weight:600;font-size:1em;color:#333;' },
+		E('span', { 'style': 'font-weight:600;font-size:1em;' },
 			_('Recommended max candidates — based on check_interval and measured per-node overhead on this device.')
 		)
 	]);
