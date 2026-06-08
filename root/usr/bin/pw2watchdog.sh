@@ -311,7 +311,7 @@ _restart_with_blackhole() {
 
 	# 1. Insert DROP as the first rule in the mangle chain
 	#    counter — for diagnostics, position 0 — first
-	nft insert rule "$nft_table" "$nft_chain" counter drop 2>/dev/null
+	nft insert rule $nft_table "$nft_chain" counter drop 2>/dev/null
 	if [ $? -ne 0 ]; then
 		log "transit blackhole: failed to insert drop rule, falling back to plain restart"
 		_restart_plain
@@ -325,7 +325,7 @@ _restart_with_blackhole() {
 	if [ -z "$handle" ]; then
 		log "transit blackhole: cannot get rule handle, removing drop attempt and falling back"
 		# Try to remove by content in case the handle was not found
-		nft delete rule "$nft_table" "$nft_chain" \
+		nft delete rule $nft_table "$nft_chain" \
 			handle "$(nft -a list chain $nft_table $nft_chain 2>/dev/null \
 				| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1; exit}')" 2>/dev/null
 		_restart_plain
@@ -357,7 +357,7 @@ _restart_with_blackhole() {
 	if [ -z "$cur_handle" ]; then
 		# No DROP rule in chain — PW2 restart already cleaned it up, nothing to do
 		log "transit blackhole: DROP rule gone (chain recreated by PW2 restart), nothing to remove"
-	elif nft delete rule "$nft_table" "$nft_chain" handle "$cur_handle" 2>/dev/null; then
+	elif nft delete rule $nft_table "$nft_chain" handle "$cur_handle" 2>/dev/null; then
 		log "transit blackhole: DROP rule removed (handle=$cur_handle)"
 	else
 		# Rule disappeared between read and delete — also fine
@@ -554,13 +554,13 @@ _static_blackhole_insert() {
 	[ -n "$PW2_NFTABLE_NAME" ]    || { log "static blackhole: NFT table unknown, skip"; return 1; }
 	[ -n "$PW2_NFTCHAIN_MANGLE" ] || { log "static blackhole: NFT chain unknown, skip"; return 1; }
 
-	nft insert rule "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" counter drop 2>/dev/null || {
+	nft insert rule $PW2_NFTABLE_NAME "$PW2_NFTCHAIN_MANGLE" counter drop 2>/dev/null || {
 		log "static blackhole: failed to insert DROP rule"
 		return 1
 	}
 
 	local handle
-	handle="$(nft -a list chain "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" 2>/dev/null \
+	handle="$(nft -a list chain $PW2_NFTABLE_NAME "$PW2_NFTCHAIN_MANGLE" 2>/dev/null \
 		| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1; exit}')"
 
 	if [ -z "$handle" ]; then
@@ -580,11 +580,11 @@ _static_blackhole_remove() {
 	# This handles cases where handle was lost (restart, manual removal, race).
 	local h handles removed=0
 
-	handles="$(nft -a list chain "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" 2>/dev/null \
+	handles="$(nft -a list chain $PW2_NFTABLE_NAME "$PW2_NFTCHAIN_MANGLE" 2>/dev/null \
 		| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1}')"
 
 	for h in $handles; do
-		nft delete rule "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" handle "$h" 2>/dev/null
+		nft delete rule $PW2_NFTABLE_NAME "$PW2_NFTCHAIN_MANGLE" handle "$h" 2>/dev/null
 		if [ $? -eq 0 ]; then
 			log "static blackhole: DROP removed (handle=$h)"
 			removed=$((removed + 1))
@@ -942,10 +942,10 @@ _cleanup_stale_drops() {
 	[ -n "$PW2_NFTABLE_NAME" ]    || return 0
 	[ -n "$PW2_NFTCHAIN_MANGLE" ] || return 0
 	local h handles
-	handles="$(nft -a list chain "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" 2>/dev/null \
+	handles="$(nft -a list chain $PW2_NFTABLE_NAME "$PW2_NFTCHAIN_MANGLE" 2>/dev/null \
 		| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1}')"
 	for h in $handles; do
-		nft delete rule "$PW2_NFTABLE_NAME" "$PW2_NFTCHAIN_MANGLE" handle "$h" 2>/dev/null \
+		nft delete rule $PW2_NFTABLE_NAME "$PW2_NFTCHAIN_MANGLE" handle "$h" 2>/dev/null \
 			&& log "startup: removed stale DROP rule (handle=$h)"
 	done
 	STATIC_BH_HANDLE=""
