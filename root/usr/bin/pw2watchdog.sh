@@ -217,6 +217,7 @@ LAST_BEST_LATENCY='${LAST_BEST_LATENCY:-}'
 STATIC_BH_HANDLE='${STATIC_BH_HANDLE:-}'
 ROTATE_ROUND=${ROTATE_ROUND:-0}
 ROTATE_OFFSET=${ROTATE_OFFSET:-0}
+LAST_SCAN_TS=${LAST_SCAN_TS:-0}
 EOFSTATE
 }
 
@@ -255,6 +256,7 @@ write_status() {
 	json_add_int    cpu_threads           "${CPU_THREADS:-0}"
 	json_add_int    ram_total_mb          "${RAM_TOTAL_MB:-0}"
 	json_add_string running               "${STATUS_RUNNING:-false}"
+	json_add_int    last_scan_ts          "${LAST_SCAN_TS:-0}"
 	json_dump > "$STATUS_FILE"
 }
 
