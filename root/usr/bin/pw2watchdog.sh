@@ -348,21 +348,20 @@ _restart_with_blackhole() {
 	# 5. Remove DROP — always, even on timeout
 	# PassWall2 restart recreates the chain so the handle may have changed.
 	# Re-read the current handle first; fall back to the saved one if not found.
+	# Re-read DROP handle from the chain — PassWall2 restart recreates the chain
+	# so the original handle may be gone. If no DROP found, it was already removed.
 	local cur_handle
 	cur_handle="$(nft -a list chain $nft_table $nft_chain 2>/dev/null \
 		| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1; exit}')"
-	[ -z "$cur_handle" ] && cur_handle="$handle"
 
-	if [ -n "$cur_handle" ]; then
-		nft delete rule "$nft_table" "$nft_chain" handle "$cur_handle" 2>/dev/null
-		if [ $? -eq 0 ]; then
-			log "transit blackhole: DROP rule removed (handle=$cur_handle)"
-		else
-			log "transit blackhole: WARNING — failed to remove DROP rule handle=$cur_handle"
-			log "transit blackhole: manual fix: nft delete rule $nft_table $nft_chain handle $cur_handle"
-		fi
+	if [ -z "$cur_handle" ]; then
+		# No DROP rule in chain — PW2 restart already cleaned it up, nothing to do
+		log "transit blackhole: DROP rule gone (chain recreated by PW2 restart), nothing to remove"
+	elif nft delete rule "$nft_table" "$nft_chain" handle "$cur_handle" 2>/dev/null; then
+		log "transit blackhole: DROP rule removed (handle=$cur_handle)"
 	else
-		log "transit blackhole: no DROP rule found in chain, already removed or chain was recreated cleanly"
+		# Rule disappeared between read and delete — also fine
+		log "transit blackhole: DROP rule already gone (handle=$cur_handle)"
 	fi
 
 	return 0
