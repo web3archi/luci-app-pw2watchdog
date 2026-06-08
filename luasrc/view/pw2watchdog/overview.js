@@ -88,8 +88,8 @@ function renderHwBlock(status) {
 			         'border-radius:5px;background:' + (active ? bg : '#f8f9fa') + ';' +
 			         'color:' + (active ? color : '#aaa') + ';text-align:center;'
 		}, [
-			E('div', { 'style': 'font-weight:700;font-size:0.85em;line-height:1.4;' }, label),
-			active ? E('div', { 'style': 'font-size:0.7em;line-height:1.2;word-break:break-word;' }, cpuLine) : ''
+			E('div', { 'style': 'font-weight:700;font-size:0.9em;' }, label),
+			active ? E('div', { 'style': 'font-size:0.75em;margin-top:2px;word-break:break-word;' }, cpuLine) : ''
 		]);
 	}
 
