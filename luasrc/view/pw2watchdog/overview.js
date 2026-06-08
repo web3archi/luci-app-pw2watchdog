@@ -84,12 +84,12 @@ function renderHwBlock(status) {
 
 	function makeBox(color, bg, border, label, active) {
 		return E('div', {
-			'style': 'flex:1;padding:4px 10px;border:2px solid ' + border + ';' +
+			'style': 'flex:1;padding:2px 8px;border:2px solid ' + border + ';' +
 			         'border-radius:5px;background:' + (active ? bg : '#f8f9fa') + ';' +
 			         'color:' + (active ? color : '#aaa') + ';text-align:center;'
 		}, [
-			E('div', { 'style': 'font-weight:700;font-size:0.9em;' }, label),
-			active ? E('div', { 'style': 'font-size:0.75em;margin-top:2px;word-break:break-word;' }, cpuLine) : ''
+			E('div', { 'style': 'font-weight:700;font-size:0.85em;line-height:1.4;' }, label),
+			active ? E('div', { 'style': 'font-size:0.7em;line-height:1.2;word-break:break-word;' }, cpuLine) : ''
 		]);
 	}
 
@@ -102,7 +102,7 @@ function renderHwBlock(status) {
 			         'background:' + levelBg + ';border:1.5px solid ' + levelBorder + ';' +
 			         'color:' + levelColor + ';font-weight:700;font-size:1em;text-align:center;'
 		}, String(recommended)),
-		E('span', { 'style': 'color:#333;font-size:0.9em;' },
+		E('span', { 'style': 'font-weight:600;font-size:1em;color:#222;' },
 			_('Recommended max candidates — based on check_interval and measured per-node overhead on this device.')
 		)
 	]);
