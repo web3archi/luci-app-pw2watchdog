@@ -398,37 +398,31 @@ return view.extend({
 			'The restart timestamp is recorded below.'
 		);
 
-		/* Read-only: last PW2 restart timestamp from status.json */
+		/* Read-only: last PW2 restart timestamp from status.json.
+		 * DummyValue + load() is the standard LuCI pattern for read-only
+		 * fields: cfgvalue returns the display string, no poll() needed.
+		 */
 		var pw2RestartRow = adv.option(form.DummyValue, '_pw2_restart_ts', _('Last watchdog-triggered PW2 restart'));
 		pw2RestartRow.depends('pw2_restart_on_failure', '1');
-		pw2RestartRow.cfgvalue = function() {
-			return poll.call(this, 0) || '—';
-		};
-		pw2RestartRow.render = function(section_id) {
-			var self = this;
-			var el = E('div', { 'class': 'cbi-value' }, [
-				E('label', { 'class': 'cbi-value-title' }, _('Last watchdog-triggered PW2 restart')),
-				E('div',  { 'class': 'cbi-value-field', 'id': 'pw2-last-restart-ts' }, '—')
-			]);
-			/* Populate from cached status.json (already fetched by the Overview poll, same path) */
-			var statusPath = L.env.requestpath
-				? L.env.requestpath.filter(function(p){ return p !== 'luci'; }).join('/')
-				: '';
-			L.Request.get('/cgi-bin/luci/admin/services/pw2watchdog/status')
-				.then(function(res) {
+		pw2RestartRow.load = function(section_id) {
+			/* Read status.json from the filesystem (same way the status banner does). */
+			return fs.read('/var/run/pw2watchdog/status.json')
+				.then(function(raw) {
 					try {
-						var st = JSON.parse(res.text());
+						var st = JSON.parse(raw || '{}');
 						var ts = parseInt(st.last_pw2_restart || '0', 10);
-						var field = document.getElementById('pw2-last-restart-ts');
-						if (field) {
-							field.textContent = ts > 0
-								? new Date(ts * 1000).toLocaleString()
-								: '— (never)';
-						}
-					} catch(e) {}
+						return ts > 0
+							? new Date(ts * 1000).toLocaleString()
+							: _('never');
+					} catch(e) {
+						return '—';
+					}
 				})
-				.catch(function() {});
-			return el;
+				.catch(function() { return '—'; });
+		};
+		pw2RestartRow.cfgvalue = function(section_id, value) {
+			/* value is what load() resolved to */
+			return value || '—';
 		};
 
 		/* --- Actions --- */
