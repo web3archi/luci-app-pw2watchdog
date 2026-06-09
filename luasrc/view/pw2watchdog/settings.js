@@ -253,6 +253,22 @@ return view.extend({
 			'Rotate all cycles through all non-excluded nodes from the last scan.'
 		);
 
+		/* ── Killswitch warning ── */
+		var ksWarn = s.option(form.DummyValue, '_ks_warning', '');
+		ksWarn.renderWidget = function() {
+			return E('div', {
+				'style': 'padding:10px 14px;border:1px solid #f59e0b;background:#fffbea;' +
+				         'color:#78350f;border-radius:4px;font-size:0.9em;line-height:1.5;'
+			}, [
+				E('strong', {}, '⚠ Blackhole ≠ killswitch. '),
+				_('The nft drop rule is inserted at runtime and does not exist until pw2watchdog starts. '),
+				_('On every reboot, traffic flows through the default WAN gateway unproxied for 10–30 s '),
+				_('until PassWall2 and pw2watchdog finish starting. '),
+				_('A true killswitch must be configured at the OpenWrt firewall level (fw4 / firewall.user), '),
+				_('independently of this addon.')
+			]);
+		};
+
 		o = s.option(form.Value, 'rotate_max_rounds', _('Rotate: max rounds'));
 		o.datatype    = 'uinteger';
 		o.placeholder = '3';

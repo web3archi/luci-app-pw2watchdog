@@ -274,6 +274,20 @@ The file `/usr/share/rpcd/acl.d/luci-app-pw2watchdog.json` grants the LuCI front
 
 ---
 
+## ⚠ Blackhole is not a killswitch
+
+The watchdog's **Blackhole** fallback inserts an `nft drop` rule into the PassWall2 mangle chain at runtime. This prevents proxy-bound traffic from leaking when all candidate nodes are dead — but **it does not protect against leaks during router boot or service restart**.
+
+On every reboot, OpenWrt brings up network interfaces and routes **before** PassWall2 and pw2watchdog start. During this window — which can last 10–30 seconds — traffic flows through the default WAN gateway unproxied. The same applies to the brief moment when PassWall2 restarts during a node switch (Transit Blackhole mitigates the switching window, but not the boot window).
+
+A true killswitch must be implemented at the **firewall / routing level**, outside of any service-level script:
+
+- Block all WAN traffic by default in `fw4` (nftables) or `/etc/firewall.user`
+- Allow traffic only through the specific proxy interface or mark
+- These rules must be part of the OpenWrt firewall configuration so they apply at boot, before any service starts
+
+**pw2watchdog does not implement this layer** — it operates at the service level and cannot guarantee zero-leak behaviour across reboots or service restarts. If leak-free operation is required (e.g. for privacy or compliance), implement a proper killswitch at the firewall level independently of this addon.
+
 ## Known limitations and notes
 
 - **Candidate count** — on MT7621 with default settings (`check_interval=180`, `timeout=4`) the recommended maximum is 3 candidates. More candidates mean the scanner may not finish within one interval, causing stale latency data. The Overview page warns if you exceed the recommended count.

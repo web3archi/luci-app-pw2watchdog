@@ -56,6 +56,13 @@ return view.extend({
 					_('The watchdog does not use _blackhole or _direct as PassWall2 node targets. The blackhole is a real nftables rule, independent of node switching.')
 				]),
 
+				renderNote(_('⚠ Blackhole is not a killswitch'), [
+					_('The Blackhole nft rule is inserted at runtime by pw2watchdog. It does not exist before the service starts.'),
+					_('On every router reboot, traffic flows through the default WAN gateway unproxied for 10–30 seconds until PassWall2 and pw2watchdog finish starting. The same brief exposure occurs when PassWall2 restarts during a node switch (Transit Blackhole covers the switching window, but not the boot window).'),
+					_('A true killswitch must be implemented at the firewall level — blocking all WAN traffic by default in fw4 or /etc/firewall.user, allowing only traffic via the proxy interface. This must be configured independently of pw2watchdog, as part of the OpenWrt firewall configuration.'),
+					_('pw2watchdog operates at the service level and cannot guarantee zero-leak behaviour across reboots or service restarts.')
+				]),
+
 				renderNote(_('Transit Blackhole'), [
 					_('When switching nodes, PassWall2 briefly restarts. During this window, the watchdog inserts the same nft drop rule before the restart and removes it once the new node is confirmed ready.'),
 					_('Transit Blackhole requires a working environment: nftables chain and fwmark must be resolved correctly by pw2watchdog-env.sh. If env resolution fails, Transit Blackhole is silently disabled.'),
