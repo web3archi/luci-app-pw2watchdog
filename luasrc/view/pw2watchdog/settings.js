@@ -461,9 +461,17 @@ return view.extend({
 		o.placeholder = 'https://api.ipify.org';
 		o.description = _(
 			'URL returning the client external IP as plain text (e.g. https://api.ipify.org). ' +
-			'Important: if this URL is routed directly by your shunt / split-routing rules, ' +
-			'the check will show "Direct" even when the proxy works correctly. ' +
-			'Use a URL that is proxied in your setup.'
+			'Use a URL that is proxied in your setup (not in your direct/shunt list).'
+		);
+		o.depends('proxy_check_enabled', '1');
+
+		o = adv.option(form.Value, 'direct_ip_ranges', _('Monitor: Direct IP ranges (CIDR)'));
+		o.placeholder = '198.51.100.0/24 203.0.113.0/24';
+		o.description = _(
+			'Space-separated list of CIDR ranges that belong to your ISP / direct connection. ' +
+			'If the external IP falls into one of these ranges the monitor shows "Direct". ' +
+			'Leave empty to rely on node matching only (proxy nodes from PassWall2 subscription are always detected automatically). ' +
+			'To find your range: run <code>curl https://ipinfo.io/&lt;your-ip&gt;</code> and look at the <em>org</em> / <em>prefix</em> field.'
 		);
 		o.depends('proxy_check_enabled', '1');
 

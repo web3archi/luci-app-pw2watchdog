@@ -199,6 +199,7 @@ load_cfg() {
 	config_get PROXY_CHECK_ENABLED           advanced proxy_check_enabled       '0'
 	config_get PROXY_CHECK_INTERVAL          advanced proxy_check_interval      '120'
 	config_get PROXY_CHECK_URL               advanced proxy_check_url           'https://api.ipify.org'
+	config_get DIRECT_IP_RANGES              advanced direct_ip_ranges          ''
 	config_list_foreach main candidate_node append_candidate
 	config_list_foreach main exclude_node   append_exclude_node
 }
@@ -1100,13 +1101,45 @@ _cleanup_stale_drops() {
 }
 
 # ---------------------------------------------------------------------------
+# CIDR membership test (pure shell, no ipcalc required).
+# Usage: _ip_in_cidr <ip> <cidr>   e.g. _ip_in_cidr 198.51.100.5 198.51.100.0/24
+# Returns 0 (true) if ip is within the CIDR block, 1 otherwise.
+# ---------------------------------------------------------------------------
+# Convert dotted-decimal IP to integer (top-level, not nested)
+_ip2int() {
+	local IFS='.'
+	set -- $1
+	echo $(( ($1 << 24) | ($2 << 16) | ($3 << 8) | $4 ))
+}
+
+_ip_in_cidr() {
+	local ip="$1" cidr="$2"
+	local net prefix
+	net="${cidr%/*}"
+	prefix="${cidr#*/}"
+	# Default prefix 32 if not specified
+	[ "$prefix" = "$cidr" ] && prefix=32
+	local ip_int net_int mask shift full
+	ip_int="$(_ip2int "$ip")"
+	net_int="$(_ip2int "$net")"
+	full=4294967295
+	shift=$(( 32 - prefix ))
+	if [ "$shift" -eq 0 ]; then
+		mask=$full
+	else
+		mask=$(( full - ( (1 << shift) - 1 ) ))
+	fi
+	[ $(( ip_int & mask )) -eq $(( net_int & mask )) ]
+}
+
+# ---------------------------------------------------------------------------
 # Proxy connection check: detect whether traffic is going through the proxy.
-# Reads all config from UCI (PROXY_CHECK_URL, WAN IP programmatically).
+# Reads all config from UCI (PROXY_CHECK_URL, DIRECT_IP_RANGES).
 # Writes PROXY_CHECK_STATE / PROXY_CHECK_IP / LAST_PROXY_CHECK_TS.
 #
 # States:
-#   proxy_ok  — external IP differs from WAN IP (traffic through proxy)
-#   direct    — external IP matches WAN IP or check URL unreachable
+#   proxy_ok  — external IP matches a known proxy node, or is not in direct ranges
+#   direct    — external IP matches DIRECT_IP_RANGES (user-configured)
 #   blackhole — STATIC_BH_HANDLE is set (nft DROP rule active)
 #   disabled  — PROXY_CHECK_ENABLED=0
 # ---------------------------------------------------------------------------
@@ -1138,10 +1171,9 @@ _check_proxy_connection() {
 		fi
 	fi
 
-	# Get WAN IP programmatically — try multiple methods
+	# WAN IP detection via ip route is unreliable when router is behind NAT/CGN.
+	# Direct detection is done via DIRECT_IP_RANGES (user-configured CIDR list).
 	local wan_ip=""
-	wan_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')"
-	[ -z "$wan_ip" ] && wan_ip="$(ip addr show | awk '/inet /{print $2}' | grep -v '^127\.' | grep -v '^10\.' | grep -v '^192\.168\.' | grep -v '^172\.1[6-9]\.' | grep -v '^172\.2[0-9]\.' | grep -v '^172\.3[01]\.' | head -1 | cut -d/ -f1)"
 
 	# Fetch external IP from check URL
 	local check_url="${PROXY_CHECK_URL:-https://api.ipify.org}"
@@ -1170,33 +1202,55 @@ _check_proxy_connection() {
 
 	PROXY_CHECK_IP="$ext_ip"
 
-	# Try to find a PassWall2 node whose server/address matches the external IP
-	# Uses UCI to iterate all sections of type "nodes" in PASSWALL_CONFIG
+	# Try to find a PassWall2 node whose server/address matches the external IP.
+	# Iterate all sections that have an 'address' field containing a valid IP
+	# (dot-decimal). This avoids dependency on 'type' field value (Xray/V2ray/etc).
 	PROXY_CHECK_NODE_LABEL=""
 	if [ -n "$ext_ip" ]; then
-		# uci show passwall2 | grep "=nodes" gives all node section names
 		local node_id node_server node_remarks
 		for node_id in $(uci show "${PASSWALL_CONFIG:-passwall2}" 2>/dev/null \
-			| awk -F= '/\.type=nodes$/{split($1,a,"."); print a[2]}'); do
-			node_server="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.${node_id}.address")"
-			[ -z "$node_server" ] && \
-				node_server="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.${node_id}.server")"
+			| awk -F= '/\.address=/{gsub(/\.address$/,"",$1); split($1,a,"."); print a[2]}'); do
+			node_server="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.${node_id}.address" 2>/dev/null)"
+			# Skip non-IP values (hostnames, example entries, etc.)
+			case "$node_server" in
+				*[!0-9.]*) continue ;;
+				"") continue ;;
+			esac
 			if [ "$node_server" = "$ext_ip" ]; then
-				node_remarks="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.${node_id}.remarks")"
+				node_remarks="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.${node_id}.remarks" 2>/dev/null)"
 				[ -z "$node_remarks" ] && node_remarks="$node_id"
 				PROXY_CHECK_NODE_LABEL="$node_remarks"
-				log "proxy_check: matched node label='$node_remarks' id=$node_id ip=$ext_ip"
+				log "proxy_check: matched node id=$node_id label='$node_remarks' ip=$ext_ip"
 				break
 			fi
 		done
 	fi
 
-	if [ -n "$wan_ip" ] && [ "$ext_ip" = "$wan_ip" ]; then
-		PROXY_CHECK_STATE="direct"
-		log "proxy_check: direct — ext_ip=$ext_ip matches wan_ip=$wan_ip"
+	# Determine direct vs proxy:
+	# 1. If node label found — definitely proxy_ok
+	# 2. Else check DIRECT_IP_RANGES (user-configured CIDR list)
+	# 3. Else proxy_ok (unknown node — still proxied, just unrecognised)
+	if [ -n "$PROXY_CHECK_NODE_LABEL" ]; then
+		PROXY_CHECK_STATE="proxy_ok"
+		log "proxy_check: proxy_ok — ext_ip=$ext_ip node='$PROXY_CHECK_NODE_LABEL'"
+	elif [ -n "${DIRECT_IP_RANGES:-}" ]; then
+		local cidr matched=""
+		for cidr in $DIRECT_IP_RANGES; do
+			if _ip_in_cidr "$ext_ip" "$cidr"; then
+				matched="$cidr"
+				break
+			fi
+		done
+		if [ -n "$matched" ]; then
+			PROXY_CHECK_STATE="direct"
+			log "proxy_check: direct — ext_ip=$ext_ip matches direct range $matched"
+		else
+			PROXY_CHECK_STATE="proxy_ok"
+			log "proxy_check: proxy_ok — ext_ip=$ext_ip (no node match, not in direct ranges)"
+		fi
 	else
 		PROXY_CHECK_STATE="proxy_ok"
-		log "proxy_check: proxy_ok — ext_ip=$ext_ip wan_ip=${wan_ip:-unknown}"
+		log "proxy_check: proxy_ok — ext_ip=$ext_ip (no node match, no direct ranges configured)"
 	fi
 }
 
