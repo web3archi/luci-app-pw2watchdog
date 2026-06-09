@@ -276,33 +276,48 @@ The file `/usr/share/rpcd/acl.d/luci-app-pw2watchdog.json` grants the LuCI front
 
 ## Monitor proxy connection
 
-An optional feature that periodically checks whether traffic is actually going through the proxy, by querying an external IP-echo URL and comparing the returned IP to the router's WAN IP.
+An optional feature that periodically checks whether traffic is actually going through the proxy, by querying an external IP-echo URL and matching the result against known PassWall2 node addresses and configured direct IP ranges.
 
 ### How it works
 
 1. Once per configured interval (minimum 60 s, default 120 s), `pw2watchdog.sh` runs `_check_proxy_connection()`
-2. The router WAN IP is detected programmatically via `ip route`
-3. `curl` fetches the external IP from the configured URL (default `https://api.ipify.org`)
-4. Comparison result is written to `status.json` and displayed in Overview under **Monitor proxy connection**
+2. `curl` fetches the external IP from the configured URL (default `https://api.ipify.org`)
+3. The result is matched against PassWall2 node addresses from UCI (all sections with an `address` field containing a valid IP)
+4. If not matched against a node, the result is compared against user-configured **Direct IP ranges** (CIDR list)
+5. State and node label are written to `status.json` and displayed in Overview under **Monitor proxy connection**
 
 | State | Meaning |
 |---|---|
-| **Proxy OK** | External IP ≠ WAN IP — traffic goes through the proxy |
-| **Direct / No proxy** | External IP = WAN IP, or URL unreachable |
-| **Blackhole** | nft DROP rule is active — no HTTP check needed |
+| **Proxy OK** + flag + label | External IP matched a known proxy node — node identified |
+| **Proxy OK** (no label) | External IP not in node list and not in direct ranges — proxied via unknown node |
+| **Direct** | External IP matched one of the configured direct CIDR ranges |
+| **Blackhole** | nft DROP rule is active — no HTTP check performed |
 
-### Enable
+### Enable and recommended first-time setup
 
-Settings → Advanced settings → **Monitor proxy connection** → enable → **Save & Apply**.
+1. `opkg install curl` (required)
+2. Settings → Advanced → **Monitor proxy connection** → enable
+3. Set **Direct IP ranges**: your ISP address range in CIDR notation (e.g. `198.51.100.0/24`).  
+   A single IP without mask is also accepted (treated as `/32`).
+4. Set **Check interval** (minimum 60 s)
+5. **Save & Apply**
+6. Open Overview — after the first check cycle the monitor block will show the current state
 
-`curl` must be installed: `opkg install curl`
+#### How to find your Direct IP range
+
+1. Go to **[https://2ip.io](https://2ip.io)** — note your current external IP address
+2. Go to **[https://2ip.io/whois/](https://2ip.io/whois/)** — find the **CIDR** field in the result
+3. Copy that value (e.g. `198.51.100.0/24`) into Settings → Advanced → **Monitor: Direct IP ranges**
+
+> Your ISP may use dynamic IPs within a fixed pool. The CIDR range from WHOIS covers the whole pool, so the direct detection will work even if your specific IP changes.
 
 ### Important caveats
 
 - **Timing lag** — the displayed state reflects the _last completed_ check. With a 120 s interval, up to 2 minutes may pass between the actual state change and the display update.
-- **Shunt / split-routing** — if the IP-echo URL is routed directly (not through the proxy) by your PassWall2 shunt rules or any other routing rule, the check will always show **Direct / No proxy** even when the proxy is working correctly. Use a URL that is guaranteed to be proxied in your setup.
+- **Shunt / split-routing** — if the IP-echo URL is routed directly (not through the proxy) by your PassWall2 shunt rules or any other routing rule, the check will always show **Direct** even when the proxy is working correctly. Use a URL that is proxied in your setup.
 - **Single check URL** — only one URL is used. There is no cross-validation.
 - **Interval minimum** — cannot be set below 60 seconds.
+- **Direct ranges optional** — if left empty, direct detection is disabled. The monitor will still identify proxy nodes by address and show their label/flag.
 
 ## Known limitations and notes
 
