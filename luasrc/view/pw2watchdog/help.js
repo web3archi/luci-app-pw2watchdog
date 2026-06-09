@@ -102,7 +102,15 @@ return view.extend({
 
 				renderNote(_('Monitor proxy connection'), [
 					_('Optional: periodically checks whether traffic goes through the proxy by querying an IP-echo URL and matching the result against known PassWall2 node addresses.'),
-					_('States: Proxy OK (ext IP matched a known proxy node — label and flag shown), Proxy OK / unknown node (ext IP not in node list but not in direct ranges either), Direct (ext IP matched your configured direct ranges), Blackhole (nft DROP rule active, no HTTP check).'),
+					_('States: ' +
+					  'Proxy OK + flag + label (exit IP matched a known node address in UCI); ' +
+					  'Proxy OK / IP only, no label (traffic is proxied but exit IP does not match any UCI node — normal for providers that use separate inbound/outbound IPs, CDN-fronted or anycast nodes); ' +
+					  'Direct (exit IP matched your configured direct CIDR ranges); ' +
+					  'Blackhole (nft DROP rule active, no HTTP check).'
+					),
+					_('Note on unknown exit IP: some hosting providers (e.g. AEZA) route outbound client traffic through a different IP than the server address your router connects to. ' +
+					  'The monitor sees the exit IP, not the inbound address. This is expected and does not mean the proxy is broken.'
+					),
 					_('Enable in Settings → Advanced → Monitor proxy connection → Save & Apply. curl must be installed (opkg install curl).'),
 					_('Recommended first-time setup: enable the monitor, set your ISP direct IP range (see below), set check interval, Save & Apply. The Overview page will show the proxy status after the first check cycle.'),
 					_('How to find your direct IP range: open https://2ip.io — you will see your current external IP. Then open https://2ip.io/whois/ — find the CIDR field (e.g. 198.51.100.0/24). Copy that value into Settings → Advanced → Monitor: Direct IP ranges. You can also enter a single IP without a mask (treated as /32).'),

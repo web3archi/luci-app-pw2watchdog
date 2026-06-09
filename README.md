@@ -289,9 +289,12 @@ An optional feature that periodically checks whether traffic is actually going t
 | State | Meaning |
 |---|---|
 | **Proxy OK** + flag + label | External IP matched a known proxy node — node identified |
-| **Proxy OK** (no label) | External IP not in node list and not in direct ranges — proxied via unknown node |
+| **Proxy OK** (IP only, no label) | Traffic is proxied, but the exit IP does not match any node address in PassWall2 UCI — see note below |
 | **Direct** | External IP matched one of the configured direct CIDR ranges |
 | **Blackhole** | nft DROP rule is active — no HTTP check performed |
+
+> **Why exit IP may not match a node address:**  
+> Some hosting providers (e.g. AEZA, certain CDN-fronted servers) use different IP addresses for *inbound* connections (the address Xray connects to, stored in UCI) and *outbound* traffic (the address your traffic exits from, seen by external services). In this case the monitor correctly shows **Proxy OK** but cannot identify the node label, because the exit IP is not listed in your PassWall2 node configuration. This is normal behaviour — it does not indicate a problem with the proxy. The same situation occurs when a subscription node uses a CDN or anycast frontend.
 
 ### Enable and recommended first-time setup
 
