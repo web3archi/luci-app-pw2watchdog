@@ -3,7 +3,7 @@
 A LuCI application for OpenWrt that monitors PassWall2 proxy nodes, automatically switches to the best available node based on latency measurements, and activates a fallback policy when all candidates fail.
 
 **Tested on:**
-- OpenWrt 23.05.5 (`ramips/mt7621`, Asus RT-AX53U)
+- OpenWrt 23.05.x (tested on `ramips/mt7621`, should work on any supported platform)
 - PassWall2 `26.4.20`
 - Lua 5.1.5
 
@@ -221,7 +221,7 @@ All runtime files live in `/var/run/pw2watchdog/` (tmpfs — lost on reboot, rec
   "last_switch": 1780238055,
   "candidate_count": 3,
   "recommended_candidates": 3,
-  "cpu_model": "MIPS 1004Kc V2.15",
+  "cpu_model": "<detected by /proc/cpuinfo>",
   "running": false
 }
 ```
@@ -335,7 +335,7 @@ After a node switch, PassWall2 restarts briefly. During that restart window — 
 
 ## Known limitations and notes
 
-- **Candidate count** — on MT7621 with default settings (`check_interval=180`, `timeout=4`) the recommended maximum is 3 candidates. More candidates mean the scanner may not finish within one interval, causing stale latency data. The Overview page warns if you exceed the recommended count.
+- **Candidate count** — the recommended maximum is calculated automatically from `check_interval`, `timeout`, and measured per-node scan overhead on your specific device. It is shown in Overview under **Device performance** (Weak / Medium / Powerful tier). More candidates than recommended means the scanner may not finish within one interval, causing stale latency data. The Overview page warns if you exceed the recommended count. On weak hardware with default settings the typical maximum is 3.
 - **Transit Blackhole requires working env** — if `pw2watchdog-env.sh` reports errors (nftables chain not found, fwmark missing), Transit Blackhole is silently disabled. Fix env errors first via Advanced Settings overrides.
 - **`sub_update_on_boot`** — runs `subscribe.lua` in the background a few seconds after service start. If PassWall2 is not yet ready at that moment, the update may partially fail. Check `sub_update.json` result field.
 - **Broken pipe from subscribe.lua** — `tr: write error: Broken pipe` is a known cosmetic issue in PassWall2's subscribe pipeline. It does not affect the result.

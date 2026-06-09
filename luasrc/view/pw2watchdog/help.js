@@ -123,7 +123,7 @@ return view.extend({
 				]),
 
 				renderNote(_('Limitations'), [
-					_('Candidate count: on MT7621 with default settings the recommended maximum is 3 candidates. The Overview page warns if you exceed the recommended count.'),
+					_('Candidate count: the recommended maximum depends on your device performance tier (Weak / Medium / Powerful) and is calculated automatically from check_interval and per-node scan overhead. The Overview page shows the recommended number and warns if you exceed it. On weak hardware with default settings (check_interval=180, timeout=4) the recommended maximum is typically 3.'),
 					_('After router reboot, PassWall2 needs time to fully initialize before nodes can be tested. Running URL Test or a manual watchdog cycle immediately after boot will produce timeouts. Wait 30\u201360 seconds after PassWall2 appears online. The watchdog handles this automatically on service start.'),
 					_('Node metadata (protocol, transport, security) is taken from PassWall2 UCI and may fall back to label heuristics if UCI fields are absent.'),
 					_('Special entries _direct, _blackhole and _default are shown as special modes, not real proxy nodes.'),

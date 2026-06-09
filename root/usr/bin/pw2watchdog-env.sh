@@ -148,8 +148,9 @@ collect_hw_info() {
 	HW_RAM_FREE_MB=$(( HW_RAM_FREE_KB / 1024 ))
 
 	# Recommended candidate count.
-	# Real measured overhead on MT7621: ~9x the configured timeout per node.
-	# (e.g. timeout=4s → ~36s per node including PassWall2 restart overhead)
+	# Measured overhead on weak hardware (single-core MIPS class): ~9x the configured
+	# timeout per node (e.g. timeout=4s → ~36s per node including PassWall2 restart overhead).
+	# On medium/powerful hardware the actual overhead is lower, so the formula is conservative.
 	# Formula: floor(check_interval * 0.6 / (timeout * 9)), min=2, max=10
 	local t real_per_node recommended
 	t=$(( timeout_per_node > 0 ? timeout_per_node : 4 ))
