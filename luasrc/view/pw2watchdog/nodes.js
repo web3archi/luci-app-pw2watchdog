@@ -102,10 +102,11 @@ function buildNodeList() {
  *    red    + ✗  = excluded
  *    grey         = regular node (auto mode, not in pool)
  * ------------------------------------------------------------------ */
-function renderStatusBadge(nodeId, currentNode, candidates, excluded, nodeMode) {
+function renderStatusBadge(nodeId, currentNode, candidates, excluded, nodeMode, bestAltNode) {
 	var isCurrent   = (nodeId === currentNode);
 	var isCandidate = (candidates.indexOf(nodeId) >= 0);
 	var isExcluded  = (excluded.indexOf(nodeId)   >= 0);
+	var isBestAlt   = (!!bestAltNode && nodeId === bestAltNode && !isCurrent);
 
 	var bg, border, icon, title;
 	if (isCurrent) {
@@ -114,12 +115,16 @@ function renderStatusBadge(nodeId, currentNode, candidates, excluded, nodeMode) 
 	} else if (isExcluded) {
 		bg = '#f8d7da'; border = '#dc3545'; icon = '✗';
 		title = 'Excluded from watchdog';
-	} else if (isCandidate) {
+	} else if (isBestAlt) {
 		bg = '#fff3cd'; border = '#ffb900'; icon = '✓';
+		title = 'Best candidate node';
+	} else if (isCandidate) {
+		/* Other candidates — LuCI header grey */
+		bg = '#f5f5f5'; border = '#bbb'; icon = '✓';
 		title = 'Candidate node';
 	} else {
-		bg = '#f0f0f0'; border = '#ccc'; icon = '';
-		title = nodeMode === 'auto' ? 'Not in current candidate pool' : '';
+		bg = '#f5f5f5'; border = '#ddd'; icon = '';
+		title = nodeMode === 'auto' ? 'Not in candidate pool' : '';
 	}
 
 	return E('span', {
@@ -295,6 +300,7 @@ var NodeTable = form.Value.extend({
 		var recommended = this.recommendedCandidates || 0;
 		var nodeMode    = this.nodeSelection  || 'auto';
 		var currentNode = this.currentNode    || '';
+		var bestAltNode = this.bestAltNode    || '';
 		var rows        = buildNodeList();
 
 		/* Candidate column heading depends on selection mode */
@@ -393,29 +399,30 @@ var NodeTable = form.Value.extend({
 			}, _('Test'));
 
 			/* Status badge — coloured square showing current/candidate/excluded state */
-			var statusBadge = renderStatusBadge(row.id, currentNode, candidates, excluded, nodeMode);
+			var statusBadge = renderStatusBadge(row.id, currentNode, candidates, excluded, nodeMode, bestAltNode);
 
-			/* IP cell */
+			/* IP + ID cell — shown when 'Show IP & ID' is toggled */
 			var ipCell = E('td', {
 				'class': 'td',
 				'data-ip-cell': '1',
-				'style': 'padding:6px 8px;display:none;white-space:nowrap;color:#555;font-size:0.85em;'
-			}, row.ip || '-');
+				'style': 'padding:6px 8px;display:none;white-space:nowrap;'
+			}, [
+				E('span', { 'style': 'color:#555;font-size:0.85em;display:block;' }, row.ip || '-'),
+				E('span', { 'style': 'color:#999;font-size:0.78em;font-family:monospace;display:block;' }, row.id || '')
+			]);
 
-			/* ID cell — shown together with IP when Show IP is toggled */
-			var idCell = E('td', {
-				'class': 'td',
-				'data-ip-cell': '1',
-				'style': 'padding:6px 8px;display:none;white-space:nowrap;color:#888;font-size:0.82em;font-family:monospace;'
-			}, row.id || '-');
+			/* candidateCell: auto=badge only, manual=badge+checkbox */
+			var candidateCell = nodeMode === 'auto'
+				? E('td', { 'class': 'td', 'style': 'text-align:center;padding:6px 8px;' }, [ statusBadge ])
+				: E('td', { 'class': 'td', 'style': 'text-align:center;padding:6px 4px;white-space:nowrap;' }, [
+					statusBadge,
+					E('span', { 'style': 'display:inline-block;margin-left:4px;vertical-align:middle;' }, [ cbCandidate ])
+				]);
 
 			return E('tr', { 'class': 'tr cbi-section-table-row', 'style': rowStyle }, [
 				E('td', { 'class': 'td', 'style': 'text-align:right;padding:6px 8px;width:1%;white-space:nowrap;color:#666;' }, String(idx + 1)),
-				/* Status badge: green=current, yellow=candidate, red=excluded */
-				E('td', { 'class': 'td', 'style': 'text-align:center;padding:6px 8px;width:32px;' }, [ statusBadge ]),
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.label || '-'),
 				ipCell,
-				idCell,
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.protocol  || '-'),
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.transport || '-'),
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.security  || '-'),
@@ -423,7 +430,7 @@ var NodeTable = form.Value.extend({
 				E('td', { 'class': 'td', 'style': 'text-align:center;padding:6px 8px;white-space:nowrap;' }, [ renderCheckedCell(row.id, cache) ]),
 				E('td', { 'class': 'td', 'style': 'text-align:center;padding:6px 8px;' }, [ testBtn ]),
 				testResultCell,
-				E('td', { 'class': 'td', 'style': 'text-align:center;padding:6px 8px;' }, [ cbCandidate ]),
+				candidateCell,
 				E('td', { 'class': 'td', 'style': 'text-align:center;padding:6px 8px;' }, [ cbExcluded ])
 			]);
 		});
@@ -473,7 +480,7 @@ var NodeTable = form.Value.extend({
 			});
 		});
 		var showIpLabel = E('label', { 'for': 'pw2-show-ip', 'style': 'font-size:0.9em;color:#666;cursor:pointer;user-select:none;' }, [
-			showIpCb, _('Show IP')
+			showIpCb, _('Show IP & ID')
 		]);
 
 		var wrapper = E('div', { 'id': cbid, 'style': 'width:95%;max-width:1200px;' }, [
@@ -508,10 +515,8 @@ var NodeTable = form.Value.extend({
 			E('table', { 'class': 'table cbi-section-table', 'style': 'width:100%;' }, [
 				E('tr', { 'class': 'tr table-titles' }, [
 					E('th', { 'class': 'th', 'style': 'text-align:right;padding:6px 8px;width:1%;' }, '#'),
-					E('th', { 'class': 'th', 'style': 'text-align:center;padding:6px 8px;width:32px;' }, _('St.')),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Label')),
-					E('th', { 'class': 'th', 'data-ip-th': '1', 'style': 'padding:6px 8px;display:none;' }, _('IP / Host')),
-					E('th', { 'class': 'th', 'data-ip-th': '1', 'style': 'padding:6px 8px;display:none;' }, _('ID')),
+					E('th', { 'class': 'th', 'data-ip-th': '1', 'style': 'padding:6px 8px;display:none;' }, _('IP / ID')),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Protocol')),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Transport')),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Security')),
@@ -610,7 +615,8 @@ return view.extend({
 		tableOpt.excludedNodes       = excludedNodes;
 		tableOpt.recommendedCandidates = recommendedCandidates;
 		tableOpt.nodeSelection       = nodeSelection;
-		tableOpt.currentNode         = status.current_node || '';
+		tableOpt.currentNode         = status.current_node  || '';
+		tableOpt.bestAltNode         = status.best_alt_node || '';
 
 		/* Override save to write exclude_node */
 		var origWrite = m.save.bind(m);
@@ -640,11 +646,15 @@ return view.extend({
 				]),
 				E('span', {}, [
 					E('span', { 'style': 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:3px;background:#fff3cd;border:2px solid #ffb900;font-size:11px;font-weight:700;color:#ffb900;margin-right:4px;vertical-align:middle;' }, '✓'),
-					_('Candidate')
+					_('Best candidate')
 				]),
 				E('span', {}, [
 					E('span', { 'style': 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:3px;background:#f8d7da;border:2px solid #dc3545;font-size:11px;font-weight:700;color:#dc3545;margin-right:4px;vertical-align:middle;' }, '✗'),
 					_('Excluded')
+				]),
+				E('span', {}, [
+					E('span', { 'style': 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:3px;background:#f5f5f5;border:2px solid #bbb;font-size:11px;font-weight:700;color:#bbb;margin-right:4px;vertical-align:middle;' }, '✓'),
+					_('Candidate')
 				])
 			]);
 		};
