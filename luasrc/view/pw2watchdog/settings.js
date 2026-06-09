@@ -255,6 +255,7 @@ return view.extend({
 
 		/* ── Killswitch warning ── */
 		var ksWarn = s.option(form.DummyValue, '_ks_warning', '');
+		ksWarn.depends('fallback_action', 'blackhole');
 		ksWarn.renderWidget = function() {
 			return E('div', {
 				'style': 'padding:10px 14px;border:1px solid #f59e0b;background:#fffbea;' +
