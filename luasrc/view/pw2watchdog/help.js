@@ -110,13 +110,6 @@ return view.extend({
 					_('Shunt / split-routing caveat: if the IP-echo URL is routed directly by your shunt or routing rules, the check will always show Direct even when the proxy is working. Use a URL that is proxied in your setup.')
 				]),
 
-				renderNote(_('⚠ Blackhole is not a killswitch'), [
-					_('The Blackhole nft rule is inserted at runtime by pw2watchdog. It does not exist before the service starts.'),
-					_('On every router reboot, traffic flows through the default WAN gateway unproxied for 10–30 s until PassWall2 and pw2watchdog finish starting. Transit Blackhole covers the node-switching window but not the boot window.'),
-					_('A true killswitch must be implemented at the firewall level — blocking all WAN traffic by default in fw4 or /etc/firewall.user, allowing only traffic via the proxy interface. This must be configured independently of pw2watchdog.'),
-					_('pw2watchdog operates at the service level and cannot guarantee zero-leak behaviour across reboots or service restarts.')
-				]),
-
 				renderNote(_('Limitations'), [
 					_('Candidate count: on MT7621 with default settings the recommended maximum is 3 candidates. The Overview page warns if you exceed the recommended count.'),
 					_('After router reboot, PassWall2 needs time to fully initialize before nodes can be tested. Running URL Test or a manual watchdog cycle immediately after boot will produce timeouts. Wait 30\u201360 seconds after PassWall2 appears online. The watchdog handles this automatically on service start.'),
