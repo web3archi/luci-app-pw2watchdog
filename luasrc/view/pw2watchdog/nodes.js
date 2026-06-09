@@ -94,6 +94,45 @@ function buildNodeList() {
 }
 
 /* ------------------------------------------------------------------ *
+ *  Node status badge (current / candidate / excluded)
+ *
+ *  Shown in the Auto column as a coloured square with an icon:
+ *    green  + ✓  = current active node
+ *    yellow + ✓  = candidate (in the recommended pool)
+ *    red    + ✗  = excluded
+ *    grey         = regular node (auto mode, not in pool)
+ * ------------------------------------------------------------------ */
+function renderStatusBadge(nodeId, currentNode, candidates, excluded, nodeMode) {
+	var isCurrent   = (nodeId === currentNode);
+	var isCandidate = (candidates.indexOf(nodeId) >= 0);
+	var isExcluded  = (excluded.indexOf(nodeId)   >= 0);
+
+	var bg, border, icon, title;
+	if (isCurrent) {
+		bg = '#d4edda'; border = '#46b450'; icon = '✓';
+		title = 'Current active node';
+	} else if (isExcluded) {
+		bg = '#f8d7da'; border = '#dc3545'; icon = '✗';
+		title = 'Excluded from watchdog';
+	} else if (isCandidate) {
+		bg = '#fff3cd'; border = '#ffb900'; icon = '✓';
+		title = 'Candidate node';
+	} else {
+		bg = '#f0f0f0'; border = '#ccc'; icon = '';
+		title = nodeMode === 'auto' ? 'Not in current candidate pool' : '';
+	}
+
+	return E('span', {
+		'title': title,
+		'style': 'display:inline-flex;align-items:center;justify-content:center;' +
+		         'width:22px;height:22px;border-radius:4px;' +
+		         'background:' + bg + ';border:2px solid ' + border + ';' +
+		         'font-size:13px;font-weight:700;color:' + border + ';' +
+		         'line-height:1;cursor:default;'
+	}, icon);
+}
+
+/* ------------------------------------------------------------------ *
  *  Latency badge + manual test
  * ------------------------------------------------------------------ */
 function latencyBadgeContent(entry) {
@@ -255,6 +294,7 @@ var NodeTable = form.Value.extend({
 		var cache       = this.latencyCache   || {};
 		var recommended = this.recommendedCandidates || 0;
 		var nodeMode    = this.nodeSelection  || 'auto';
+		var currentNode = this.currentNode    || '';
 		var rows        = buildNodeList();
 
 		/* Candidate column heading depends on selection mode */
@@ -352,17 +392,30 @@ var NodeTable = form.Value.extend({
 				'click': function(ev) { ev.preventDefault(); testNode(row.id, testResultCell); }
 			}, _('Test'));
 
+			/* Status badge — coloured square showing current/candidate/excluded state */
+			var statusBadge = renderStatusBadge(row.id, currentNode, candidates, excluded, nodeMode);
+
 			/* IP cell */
 			var ipCell = E('td', {
 				'class': 'td',
 				'data-ip-cell': '1',
-				'style': 'padding:6px 8px;display:none;white-space:nowrap;'
+				'style': 'padding:6px 8px;display:none;white-space:nowrap;color:#555;font-size:0.85em;'
 			}, row.ip || '-');
+
+			/* ID cell — shown together with IP when Show IP is toggled */
+			var idCell = E('td', {
+				'class': 'td',
+				'data-ip-cell': '1',
+				'style': 'padding:6px 8px;display:none;white-space:nowrap;color:#888;font-size:0.82em;font-family:monospace;'
+			}, row.id || '-');
 
 			return E('tr', { 'class': 'tr cbi-section-table-row', 'style': rowStyle }, [
 				E('td', { 'class': 'td', 'style': 'text-align:right;padding:6px 8px;width:1%;white-space:nowrap;color:#666;' }, String(idx + 1)),
+				/* Status badge: green=current, yellow=candidate, red=excluded */
+				E('td', { 'class': 'td', 'style': 'text-align:center;padding:6px 8px;width:32px;' }, [ statusBadge ]),
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.label || '-'),
 				ipCell,
+				idCell,
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.protocol  || '-'),
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.transport || '-'),
 				E('td', { 'class': 'td', 'style': 'padding:6px 8px;' }, row.security  || '-'),
@@ -455,8 +508,10 @@ var NodeTable = form.Value.extend({
 			E('table', { 'class': 'table cbi-section-table', 'style': 'width:100%;' }, [
 				E('tr', { 'class': 'tr table-titles' }, [
 					E('th', { 'class': 'th', 'style': 'text-align:right;padding:6px 8px;width:1%;' }, '#'),
+					E('th', { 'class': 'th', 'style': 'text-align:center;padding:6px 8px;width:32px;' }, _('St.')),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Label')),
 					E('th', { 'class': 'th', 'data-ip-th': '1', 'style': 'padding:6px 8px;display:none;' }, _('IP / Host')),
+					E('th', { 'class': 'th', 'data-ip-th': '1', 'style': 'padding:6px 8px;display:none;' }, _('ID')),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Protocol')),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Transport')),
 					E('th', { 'class': 'th', 'style': 'padding:6px 8px;' }, _('Security')),
@@ -555,6 +610,7 @@ return view.extend({
 		tableOpt.excludedNodes       = excludedNodes;
 		tableOpt.recommendedCandidates = recommendedCandidates;
 		tableOpt.nodeSelection       = nodeSelection;
+		tableOpt.currentNode         = status.current_node || '';
 
 		/* Override save to write exclude_node */
 		var origWrite = m.save.bind(m);
@@ -568,6 +624,29 @@ return view.extend({
 				uci.unset('pw2watchdog', cfgSection, 'exclude_node');
 			}
 			return origWrite();
+		};
+
+		/* Legend */
+		var legend = m.section(form.NamedSection, '__legend__', 'dummy');
+		legend.render = function() {
+			return E('div', {
+				'style': 'margin:0.5em 0 1em 0;padding:6px 10px;border-radius:4px;' +
+				         'background:var(--cbi-tblsection-bg,#fafafa);border:1px solid var(--cbi-tblsection-border,#ddd);' +
+				         'font-size:0.88em;color:#555;display:flex;gap:16px;flex-wrap:wrap;align-items:center;'
+			}, [
+				E('span', {}, [
+					E('span', { 'style': 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:3px;background:#d4edda;border:2px solid #46b450;font-size:11px;font-weight:700;color:#46b450;margin-right:4px;vertical-align:middle;' }, '✓'),
+					_('Current')
+				]),
+				E('span', {}, [
+					E('span', { 'style': 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:3px;background:#fff3cd;border:2px solid #ffb900;font-size:11px;font-weight:700;color:#ffb900;margin-right:4px;vertical-align:middle;' }, '✓'),
+					_('Candidate')
+				]),
+				E('span', {}, [
+					E('span', { 'style': 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:3px;background:#f8d7da;border:2px solid #dc3545;font-size:11px;font-weight:700;color:#dc3545;margin-right:4px;vertical-align:middle;' }, '✗'),
+					_('Excluded')
+				])
+			]);
 		};
 
 		/* Actions */
