@@ -338,9 +338,11 @@ return view.extend({
 		return Promise.all([
 			uci.load('pw2watchdog'),
 			uci.load('passwall2'),
-			fs.read_direct('/var/run/pw2watchdog/status.json', 'json').catch(function() { return {}; }),
-			fs.read_direct('/var/run/pw2watchdog/history.jsonl', 'text').catch(function() { return ''; }),
-			fs.read_direct('/var/run/pw2watchdog/sub_update.json', 'json').catch(function() { return {}; })
+			fs.read_direct('/var/run/pw2watchdog/status.json',      'json').catch(function() { return {}; }),
+			fs.read_direct('/var/run/pw2watchdog/history.jsonl',    'text').catch(function() { return ''; }),
+			fs.read_direct('/var/run/pw2watchdog/sub_update.json',  'json').catch(function() { return {}; }),
+			/* [5] latency_cache.json — used to get max(ts) as last scan time */
+			fs.read_direct('/var/run/pw2watchdog/latency_cache.json', 'json').catch(function() { return {}; })
 		]);
 	},
 
@@ -355,6 +357,17 @@ return view.extend({
 		try { status = data[2] || {}; } catch(e) {}
 		var subData = {};
 		try { subData = data[4] || {}; } catch(e) {}
+		var latencyCache = {};
+		try { latencyCache = data[5] || {}; } catch(e) {}
+
+		/* Compute last scan timestamp as max(ts) across all nodes in cache.
+		 * This is more reliable than LAST_SCAN_TS from state (avoids race
+		 * condition between scanner and watchdog writing the same file). */
+		var lastScanTs = 0;
+		Object.keys(latencyCache).forEach(function(nodeId) {
+			var ts = Number((latencyCache[nodeId] || {}).ts || 0);
+			if (ts > lastScanTs) lastScanTs = ts;
+		});
 
 		var recommendedCandidates = parseInt(status.recommended_candidates || 0);
 		var candidateCount        = parseInt(status.candidate_count        || 0);
@@ -489,7 +502,9 @@ return view.extend({
 			));
 
 			/* 9. Last latency measurement (scanner) */
-			var lastScanTs = Number(obj.last_scan_ts || 0);
+			/* lastScanTs is a closure variable (computed from latency_cache.json
+			 * max ts), updated on every refreshAll() poll. More reliable than
+			 * last_scan_ts from status.json which can be stale due to race. */
 			runtimeTable.appendChild(makeRow(
 				_('Last latency measurement'),
 				makeSimpleValue(lastScanTs > 0 ? new Date(lastScanTs * 1000).toLocaleString() : '-'),
@@ -589,12 +604,21 @@ return view.extend({
 				fs.read('/var/run/pw2watchdog/status.json').catch(function() { return '{}'; }),
 				fs.read('/var/run/pw2watchdog/history.jsonl').catch(function() { return ''; }),
 				uci.load('passwall2'),
-				fs.read('/var/run/pw2watchdog/sub_update.json').catch(function() { return '{}'; })
+				fs.read('/var/run/pw2watchdog/sub_update.json').catch(function() { return '{}'; }),
+				fs.read('/var/run/pw2watchdog/latency_cache.json').catch(function() { return '{}'; })
 			]).then(function(res) {
 				var obj = {};
 				try { obj = JSON.parse(res[0] || '{}'); } catch(e) {}
 				try { subData = JSON.parse(res[3] || '{}'); } catch(e) {}
 				currentHistoryItems = parseHistory(res[1] || '');
+				/* Recompute lastScanTs from cache (more reliable than state) */
+				try {
+					var freshCache = JSON.parse(res[4] || '{}');
+					Object.keys(freshCache).forEach(function(nid) {
+						var ts = Number((freshCache[nid] || {}).ts || 0);
+						if (ts > lastScanTs) lastScanTs = ts;
+					});
+				} catch(e) {}
 				renderRuntime(obj);
 				renderHistory(currentHistoryItems);
 				/* Update excess banner (manual mode only) */
