@@ -289,9 +289,10 @@ write_status() {
 	json_add_int    last_scan_ts          "${LAST_SCAN_TS:-0}"
 	json_add_int    last_pw2_restart      "${LAST_PW2_RESTART:-0}"
 	json_add_string proxy_check_enabled   "${PROXY_CHECK_ENABLED:-0}"
-	json_add_string proxy_check_state     "${PROXY_CHECK_STATE:-}"
-	json_add_string proxy_check_ip        "${PROXY_CHECK_IP:-}"
-	json_add_int    proxy_check_ts        "${LAST_PROXY_CHECK_TS:-0}"
+	json_add_string proxy_check_state      "${PROXY_CHECK_STATE:-}"
+	json_add_string proxy_check_ip         "${PROXY_CHECK_IP:-}"
+	json_add_string proxy_check_node_label "${PROXY_CHECK_NODE_LABEL:-}"
+	json_add_int    proxy_check_ts         "${LAST_PROXY_CHECK_TS:-0}"
 	json_dump > "$STATUS_FILE"
 }
 
@@ -1168,6 +1169,27 @@ _check_proxy_connection() {
 	fi
 
 	PROXY_CHECK_IP="$ext_ip"
+
+	# Try to find a PassWall2 node whose server/address matches the external IP
+	# Uses UCI to iterate all sections of type "nodes" in PASSWALL_CONFIG
+	PROXY_CHECK_NODE_LABEL=""
+	if [ -n "$ext_ip" ]; then
+		# uci show passwall2 | grep "=nodes" gives all node section names
+		local node_id node_server node_remarks
+		for node_id in $(uci show "${PASSWALL_CONFIG:-passwall2}" 2>/dev/null \
+			| awk -F= '/\.type=nodes$/{split($1,a,"."); print a[2]}'); do
+			node_server="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.${node_id}.address")"
+			[ -z "$node_server" ] && \
+				node_server="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.${node_id}.server")"
+			if [ "$node_server" = "$ext_ip" ]; then
+				node_remarks="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.${node_id}.remarks")"
+				[ -z "$node_remarks" ] && node_remarks="$node_id"
+				PROXY_CHECK_NODE_LABEL="$node_remarks"
+				log "proxy_check: matched node label='$node_remarks' id=$node_id ip=$ext_ip"
+				break
+			fi
+		done
+	fi
 
 	if [ -n "$wan_ip" ] && [ "$ext_ip" = "$wan_ip" ]; then
 		PROXY_CHECK_STATE="direct"

@@ -332,7 +332,15 @@ function renderActions() {
 /* ------------------------------------------------------------------ *
  *  Monitor proxy connection block
  * ------------------------------------------------------------------ */
-function renderProxyCheckState(state, ip, ts, checkUrl) {
+/* Extract flag emoji (regional indicator pair) from a string */
+function extractFlag(label) {
+	if (!label) return '';
+	/* Regional indicator symbols: U+1F1E6..U+1F1FF — form flag pairs */
+	var m = label.match(/[\uD83C][\uDDE6-\uDDFF][\uD83C][\uDDE6-\uDDFF]/);
+	return m ? m[0] : '';
+}
+
+function renderProxyCheckState(state, ip, ts, checkUrl, nodeLabel) {
 	var cfg = {
 		proxy_ok:  { bg: '#d4edda', border: '#46b450', color: '#1a7f3c', icon: '✓', label: 'Proxy OK' },
 		direct:    { bg: '#f8d7da', border: '#dc3545', color: '#842029', icon: '✗', label: 'Direct / No proxy' },
@@ -342,6 +350,26 @@ function renderProxyCheckState(state, ip, ts, checkUrl) {
 	};
 	var c = cfg[state] || cfg.unknown;
 	var fmtTs = ts > 0 ? new Date(ts * 1000).toLocaleString() : '-';
+
+	/* Node info line: flag + label + (IP) */
+	var nodeInfoEl = '';
+	if (state === 'proxy_ok' && nodeLabel) {
+		var flag = extractFlag(nodeLabel);
+		var name = nodeLabel.replace(/[\uD83C][\uDDE6-\uDDFF][\uD83C][\uDDE6-\uDDFF]/g, '').trim();
+		nodeInfoEl = E('span', {
+			'style': 'display:block;margin-top:6px;font-size:0.92em;font-weight:500;color:' + c.color + ';'
+		}, [
+			flag ? E('span', { 'style': 'font-size:1.2em;margin-right:5px;' }, flag) : '',
+			name,
+			ip ? E('span', { 'style': 'font-weight:400;opacity:0.75;margin-left:6px;' }, '(' + ip + ')') : ''
+		]);
+	} else if (state === 'proxy_ok' && ip) {
+		/* IP only — node not found in UCI */
+		nodeInfoEl = E('span', {
+			'style': 'display:block;margin-top:6px;font-size:0.92em;font-weight:400;opacity:0.8;color:' + c.color + ';'
+		}, ip);
+	}
+
 	return E('div', { 'style': 'margin-top:4px;' }, [
 		E('div', {
 			'style': 'display:inline-flex;align-items:center;gap:10px;' +
@@ -350,8 +378,10 @@ function renderProxyCheckState(state, ip, ts, checkUrl) {
 			         'border-radius:6px;font-size:1em;font-weight:600;'
 		}, [
 			E('span', { 'style': 'font-size:1.3em;' }, c.icon),
-			E('span', {}, c.label),
-			ip ? E('span', { 'style': 'font-weight:400;font-size:0.9em;opacity:0.85;' }, '— ' + ip) : ''
+			E('div', {}, [
+				E('span', {}, c.label),
+				nodeInfoEl
+			])
 		]),
 		E('div', { 'style': 'margin-top:6px;font-size:0.85em;color:#666;' }, [
 			_('Last checked: ') + fmtTs,
@@ -659,10 +689,11 @@ return view.extend({
 				if (proxyCheckEnabled === '1') {
 					proxyCheckEl.innerHTML = '';
 					proxyCheckEl.appendChild(renderProxyCheckState(
-						obj.proxy_check_state || 'unknown',
-						obj.proxy_check_ip    || '',
-						Number(obj.proxy_check_ts || 0),
-						proxyCheckUrl
+						obj.proxy_check_state      || 'unknown',
+						obj.proxy_check_ip         || '',
+						Number(obj.proxy_check_ts  || 0),
+						proxyCheckUrl,
+						obj.proxy_check_node_label || ''
 					));
 				}
 				/* Update excess banner (manual mode only) */
@@ -717,6 +748,10 @@ return view.extend({
 				E('div', { 'class': 'cbi-map-descr' },
 					_('Runtime status and recent watchdog events. This page refreshes automatically.')
 				),
+				proxyCheckEnabled === '1' ? E('div', { 'class': 'cbi-section' }, [
+					E('h3', _('Monitor proxy connection')),
+					proxyCheckEl
+				]) : '',
 				hwBlock || '',
 				E('div', { 'class': 'cbi-section' }, [
 					E('h3', _('Runtime status')),
@@ -724,10 +759,6 @@ return view.extend({
 					/* Last refresh appended after table */
 					E('table', { 'style': 'width:100%;' }, [ lastRefreshRow ])
 				]),
-				proxyCheckEnabled === '1' ? E('div', { 'class': 'cbi-section' }, [
-					E('h3', _('Monitor proxy connection')),
-					proxyCheckEl
-				]) : '',
 				E('div', { 'class': 'cbi-section' }, [
 					E('details', { 'open': 'open' }, [
 						E('summary', { 'style': 'cursor:pointer;font-weight:600;margin-bottom:12px;' },
@@ -746,10 +777,11 @@ return view.extend({
 		renderHistory(historyItems);
 		if (proxyCheckEnabled === '1') {
 			proxyCheckEl.appendChild(renderProxyCheckState(
-				status.proxy_check_state || 'unknown',
-				status.proxy_check_ip    || '',
-				Number(status.proxy_check_ts || 0),
-				proxyCheckUrl
+				status.proxy_check_state      || 'unknown',
+				status.proxy_check_ip         || '',
+				Number(status.proxy_check_ts  || 0),
+				proxyCheckUrl,
+				status.proxy_check_node_label || ''
 			));
 		}
 		window.setInterval(function() {
