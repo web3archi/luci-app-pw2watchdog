@@ -329,6 +329,37 @@ function renderActions() {
 	]);
 }
 
+/* ------------------------------------------------------------------ *
+ *  Monitor proxy connection block
+ * ------------------------------------------------------------------ */
+function renderProxyCheckState(state, ip, ts, checkUrl) {
+	var cfg = {
+		proxy_ok:  { bg: '#d4edda', border: '#46b450', color: '#1a7f3c', icon: '✓', label: 'Proxy OK' },
+		direct:    { bg: '#f8d7da', border: '#dc3545', color: '#842029', icon: '✗', label: 'Direct / No proxy' },
+		blackhole: { bg: '#343a40', border: '#343a40', color: '#fff',    icon: '⬛', label: 'Blackhole' },
+		checking:  { bg: '#fff3cd', border: '#ffb900', color: '#856404', icon: '…', label: 'Checking…' },
+		unknown:   { bg: '#f5f5f5', border: '#bbb',    color: '#666',    icon: '?',      label: 'Unknown' }
+	};
+	var c = cfg[state] || cfg.unknown;
+	var fmtTs = ts > 0 ? new Date(ts * 1000).toLocaleString() : '-';
+	return E('div', { 'style': 'margin-top:4px;' }, [
+		E('div', {
+			'style': 'display:inline-flex;align-items:center;gap:10px;' +
+			         'padding:10px 16px;border:2px solid ' + c.border + ';' +
+			         'background:' + c.bg + ';color:' + c.color + ';' +
+			         'border-radius:6px;font-size:1em;font-weight:600;'
+		}, [
+			E('span', { 'style': 'font-size:1.3em;' }, c.icon),
+			E('span', {}, c.label),
+			ip ? E('span', { 'style': 'font-weight:400;font-size:0.9em;opacity:0.85;' }, '— ' + ip) : ''
+		]),
+		E('div', { 'style': 'margin-top:6px;font-size:0.85em;color:#666;' }, [
+			_('Last checked: ') + fmtTs,
+			checkUrl ? (' — ' + checkUrl) : ''
+		])
+	]);
+}
+
 return view.extend({
 	handleSave: null,
 	handleSaveApply: null,
@@ -352,6 +383,8 @@ return view.extend({
 		var nodeSelectionMode = uci.get('pw2watchdog', 'main', 'node_selection')  || 'auto';
 		var fallbackActionCfg = uci.get('pw2watchdog', 'main', 'fallback_action') || 'blackhole';
 		var subAutoUpdate     = uci.get('pw2watchdog', 'advanced', 'sub_auto_update') || '0';
+		var proxyCheckEnabled = uci.get('pw2watchdog', 'advanced', 'proxy_check_enabled') || '0';
+		var proxyCheckUrl     = uci.get('pw2watchdog', 'advanced', 'proxy_check_url')     || 'https://api.ipify.org';
 
 		var status = {};
 		try { status = data[2] || {}; } catch(e) {}
@@ -375,6 +408,7 @@ return view.extend({
 
 		var runtimeTable     = E('table', { 'class': 'table cbi-section-table', 'style': 'width:100%;' });
 		var historyContainer = E('div',   { 'id': 'pw2-history-container' });
+		var proxyCheckEl     = E('div',   { 'id': 'pw2-proxy-check' });
 		var lastRefreshEl    = E('span',  {}, '-');
 		var subValueCell     = E('td',    { 'style': 'width:40%;padding:8px;vertical-align:top;' }, '-');
 
@@ -621,6 +655,16 @@ return view.extend({
 				} catch(e) {}
 				renderRuntime(obj);
 				renderHistory(currentHistoryItems);
+				/* Update proxy check block */
+				if (proxyCheckEnabled === '1') {
+					proxyCheckEl.innerHTML = '';
+					proxyCheckEl.appendChild(renderProxyCheckState(
+						obj.proxy_check_state || 'unknown',
+						obj.proxy_check_ip    || '',
+						Number(obj.proxy_check_ts || 0),
+						proxyCheckUrl
+					));
+				}
 				/* Update excess banner (manual mode only) */
 				if (nodeSelectionMode === 'manual') {
 					excessBannerContainer.innerHTML = '';
@@ -680,6 +724,10 @@ return view.extend({
 					/* Last refresh appended after table */
 					E('table', { 'style': 'width:100%;' }, [ lastRefreshRow ])
 				]),
+				proxyCheckEnabled === '1' ? E('div', { 'class': 'cbi-section' }, [
+					E('h3', _('Monitor proxy connection')),
+					proxyCheckEl
+				]) : '',
 				E('div', { 'class': 'cbi-section' }, [
 					E('details', { 'open': 'open' }, [
 						E('summary', { 'style': 'cursor:pointer;font-weight:600;margin-bottom:12px;' },
@@ -696,6 +744,14 @@ return view.extend({
 
 		renderRuntime(status);
 		renderHistory(historyItems);
+		if (proxyCheckEnabled === '1') {
+			proxyCheckEl.appendChild(renderProxyCheckState(
+				status.proxy_check_state || 'unknown',
+				status.proxy_check_ip    || '',
+				Number(status.proxy_check_ts || 0),
+				proxyCheckUrl
+			));
+		}
 		window.setInterval(function() {
 			refreshAll().then(function() { updateSaveBtn(); });
 		}, 5000);

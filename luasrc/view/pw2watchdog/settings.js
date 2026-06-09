@@ -442,6 +442,31 @@ return view.extend({
 			return value || '—';
 		};
 
+		/* ── Monitor proxy connection ─────────────────────────────────── */
+		o = adv.option(form.Flag, 'proxy_check_enabled', _('Monitor proxy connection'));
+		o.description = _(
+			'Periodically check whether traffic is going through the proxy by comparing ' +
+			'the external IP from an IP-echo service against the local WAN IP. ' +
+			'Result shown in Overview. Activate with Save & Apply.'
+		);
+		o.default = '0';
+
+		o = adv.option(form.Value, 'proxy_check_interval', _('Monitor: check interval (s)'));
+		o.datatype    = 'min(60)';
+		o.placeholder = '120';
+		o.description = _('How often to check proxy connection. Minimum 60 s.');
+		o.depends('proxy_check_enabled', '1');
+
+		o = adv.option(form.Value, 'proxy_check_url', _('Monitor: IP-echo URL'));
+		o.placeholder = 'https://api.ipify.org';
+		o.description = _(
+			'URL returning the client external IP as plain text (e.g. https://api.ipify.org). ' +
+			'Important: if this URL is routed directly by your shunt / split-routing rules, ' +
+			'the check will show "Direct" even when the proxy works correctly. ' +
+			'Use a URL that is proxied in your setup.'
+		);
+		o.depends('proxy_check_enabled', '1');
+
 		/* --- Actions --- */
 		var actions = m.section(form.NamedSection, '__actions__', 'dummy');
 		var self = this;

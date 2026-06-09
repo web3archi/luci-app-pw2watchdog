@@ -274,19 +274,35 @@ The file `/usr/share/rpcd/acl.d/luci-app-pw2watchdog.json` grants the LuCI front
 
 ---
 
-## ⚠ Blackhole is not a killswitch
+## Monitor proxy connection
 
-The watchdog's **Blackhole** fallback inserts an `nft drop` rule into the PassWall2 mangle chain at runtime. This prevents proxy-bound traffic from leaking when all candidate nodes are dead — but **it does not protect against leaks during router boot or service restart**.
+An optional feature that periodically checks whether traffic is actually going through the proxy, by querying an external IP-echo URL and comparing the returned IP to the router's WAN IP.
 
-On every reboot, OpenWrt brings up network interfaces and routes **before** PassWall2 and pw2watchdog start. During this window — which can last 10–30 seconds — traffic flows through the default WAN gateway unproxied. The same applies to the brief moment when PassWall2 restarts during a node switch (Transit Blackhole mitigates the switching window, but not the boot window).
+### How it works
 
-A true killswitch must be implemented at the **firewall / routing level**, outside of any service-level script:
+1. Once per configured interval (minimum 60 s, default 120 s), `pw2watchdog.sh` runs `_check_proxy_connection()`
+2. The router WAN IP is detected programmatically via `ip route`
+3. `curl` fetches the external IP from the configured URL (default `https://api.ipify.org`)
+4. Comparison result is written to `status.json` and displayed in Overview under **Monitor proxy connection**
 
-- Block all WAN traffic by default in `fw4` (nftables) or `/etc/firewall.user`
-- Allow traffic only through the specific proxy interface or mark
-- These rules must be part of the OpenWrt firewall configuration so they apply at boot, before any service starts
+| State | Meaning |
+|---|---|
+| **Proxy OK** | External IP ≠ WAN IP — traffic goes through the proxy |
+| **Direct / No proxy** | External IP = WAN IP, or URL unreachable |
+| **Blackhole** | nft DROP rule is active — no HTTP check needed |
 
-**pw2watchdog does not implement this layer** — it operates at the service level and cannot guarantee zero-leak behaviour across reboots or service restarts. If leak-free operation is required (e.g. for privacy or compliance), implement a proper killswitch at the firewall level independently of this addon.
+### Enable
+
+Settings → Advanced settings → **Monitor proxy connection** → enable → **Save & Apply**.
+
+`curl` must be installed: `opkg install curl`
+
+### Important caveats
+
+- **Timing lag** — the displayed state reflects the _last completed_ check. With a 120 s interval, up to 2 minutes may pass between the actual state change and the display update.
+- **Shunt / split-routing** — if the IP-echo URL is routed directly (not through the proxy) by your PassWall2 shunt rules or any other routing rule, the check will always show **Direct / No proxy** even when the proxy is working correctly. Use a URL that is guaranteed to be proxied in your setup.
+- **Single check URL** — only one URL is used. There is no cross-validation.
+- **Interval minimum** — cannot be set below 60 seconds.
 
 ## Known limitations and notes
 

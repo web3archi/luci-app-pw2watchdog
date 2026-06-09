@@ -196,6 +196,9 @@ load_cfg() {
 	config_get ROTATE_FINAL_ACTION           main rotate_final_action           'blackhole'
 	config_get PW2_RESTART_ON_FAILURE        advanced pw2_restart_on_failure    '0'
 	config_get INITIAL_DEFAULT_NODE          main initial_default_node          ''
+	config_get PROXY_CHECK_ENABLED           advanced proxy_check_enabled       '0'
+	config_get PROXY_CHECK_INTERVAL          advanced proxy_check_interval      '120'
+	config_get PROXY_CHECK_URL               advanced proxy_check_url           'https://api.ipify.org'
 	config_list_foreach main candidate_node append_candidate
 	config_list_foreach main exclude_node   append_exclude_node
 }
@@ -213,6 +216,7 @@ load_state() {
 	ROTATE_ROUND=0        # current rotation round (circular buffer full-cycle counter)
 	ROTATE_OFFSET=0       # current position in the circular node buffer (advances by 1 per cycle)
 	LAST_PW2_RESTART=0   # unix timestamp of last PassWall2 restart triggered by watchdog
+	LAST_PROXY_CHECK_TS=0  # unix timestamp of last proxy connection check
 	[ -f "$STATE_FILE" ] && . "$STATE_FILE"
 }
 
@@ -239,6 +243,7 @@ ROTATE_ROUND=${ROTATE_ROUND:-0}
 ROTATE_OFFSET=${ROTATE_OFFSET:-0}
 LAST_SCAN_TS=${LAST_SCAN_TS:-0}
 LAST_PW2_RESTART=${LAST_PW2_RESTART:-0}
+LAST_PROXY_CHECK_TS=${LAST_PROXY_CHECK_TS:-0}
 EOFSTATE
 }
 
@@ -283,6 +288,10 @@ write_status() {
 	json_add_string running               "${STATUS_RUNNING:-false}"
 	json_add_int    last_scan_ts          "${LAST_SCAN_TS:-0}"
 	json_add_int    last_pw2_restart      "${LAST_PW2_RESTART:-0}"
+	json_add_string proxy_check_enabled   "${PROXY_CHECK_ENABLED:-0}"
+	json_add_string proxy_check_state     "${PROXY_CHECK_STATE:-}"
+	json_add_string proxy_check_ip        "${PROXY_CHECK_IP:-}"
+	json_add_int    proxy_check_ts        "${LAST_PROXY_CHECK_TS:-0}"
 	json_dump > "$STATUS_FILE"
 }
 
@@ -986,6 +995,9 @@ run_once() {
 	status_current="$current"
 	history_node="$current"
 
+	# Proxy connection check (interval-gated, reads PROXY_CHECK_* from cfg)
+	_check_proxy_connection
+
 	if [ -z "$CANDIDATES" ]; then
 		LAST_REASON="no_candidates"
 		LAST_TARGET=""
@@ -1084,6 +1096,86 @@ _cleanup_stale_drops() {
 		log "startup: fallback=${FALLBACK_ACTION:-blackhole}, keeping last active node until first scan"
 		;;
 	esac
+}
+
+# ---------------------------------------------------------------------------
+# Proxy connection check: detect whether traffic is going through the proxy.
+# Reads all config from UCI (PROXY_CHECK_URL, WAN IP programmatically).
+# Writes PROXY_CHECK_STATE / PROXY_CHECK_IP / LAST_PROXY_CHECK_TS.
+#
+# States:
+#   proxy_ok  — external IP differs from WAN IP (traffic through proxy)
+#   direct    — external IP matches WAN IP or check URL unreachable
+#   blackhole — STATIC_BH_HANDLE is set (nft DROP rule active)
+#   disabled  — PROXY_CHECK_ENABLED=0
+# ---------------------------------------------------------------------------
+_check_proxy_connection() {
+	if [ "${PROXY_CHECK_ENABLED:-0}" != "1" ]; then
+		PROXY_CHECK_STATE=""
+		return 0
+	fi
+
+	# Blackhole active — no HTTP check needed
+	if [ -n "${STATIC_BH_HANDLE:-}" ]; then
+		PROXY_CHECK_STATE="blackhole"
+		PROXY_CHECK_IP=""
+		LAST_PROXY_CHECK_TS="$(date +%s)"
+		log "proxy_check: blackhole active (nft DROP handle=${STATIC_BH_HANDLE})"
+		return 0
+	fi
+
+	# Interval guard
+	local now interval
+	now="$(date +%s)"
+	interval="${PROXY_CHECK_INTERVAL:-120}"
+	[ "$interval" -lt 60 ] && interval=60
+	if [ -n "${LAST_PROXY_CHECK_TS:-}" ] && [ "${LAST_PROXY_CHECK_TS:-0}" -gt 0 ]; then
+		local age=$(( now - LAST_PROXY_CHECK_TS ))
+		if [ "$age" -lt "$interval" ]; then
+			log "proxy_check: skipping (last check ${age}s ago, interval=${interval}s)"
+			return 0
+		fi
+	fi
+
+	# Get WAN IP programmatically — try multiple methods
+	local wan_ip=""
+	wan_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')"
+	[ -z "$wan_ip" ] && wan_ip="$(ip addr show | awk '/inet /{print $2}' | grep -v '^127\.' | grep -v '^10\.' | grep -v '^192\.168\.' | grep -v '^172\.1[6-9]\.' | grep -v '^172\.2[0-9]\.' | grep -v '^172\.3[01]\.' | head -1 | cut -d/ -f1)"
+
+	# Fetch external IP from check URL
+	local check_url="${PROXY_CHECK_URL:-https://api.ipify.org}"
+	local ext_ip=""
+	ext_ip="$(curl -s --max-time 5 --retry 0 "$check_url" 2>/dev/null | tr -d '[:space:]')"
+
+	LAST_PROXY_CHECK_TS="$now"
+
+	# Validate: must look like an IP address
+	case "$ext_ip" in
+	*[!0-9.:]*)
+		# Non-IP response or empty — treat as unreachable
+		PROXY_CHECK_STATE="direct"
+		PROXY_CHECK_IP=""
+		log "proxy_check: unexpected response from $check_url: '$ext_ip'"
+		return 0
+		;;
+	esac
+
+	if [ -z "$ext_ip" ]; then
+		PROXY_CHECK_STATE="direct"
+		PROXY_CHECK_IP=""
+		log "proxy_check: no response from $check_url (curl failed or timed out)"
+		return 0
+	fi
+
+	PROXY_CHECK_IP="$ext_ip"
+
+	if [ -n "$wan_ip" ] && [ "$ext_ip" = "$wan_ip" ]; then
+		PROXY_CHECK_STATE="direct"
+		log "proxy_check: direct — ext_ip=$ext_ip matches wan_ip=$wan_ip"
+	else
+		PROXY_CHECK_STATE="proxy_ok"
+		log "proxy_check: proxy_ok — ext_ip=$ext_ip wan_ip=${wan_ip:-unknown}"
+	fi
 }
 
 daemon_loop() {
