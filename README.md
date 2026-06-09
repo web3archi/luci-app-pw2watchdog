@@ -311,6 +311,17 @@ An optional feature that periodically checks whether traffic is actually going t
 
 > Your ISP may use dynamic IPs within a fixed pool. The CIDR range from WHOIS covers the whole pool, so the direct detection will work even if your specific IP changes.
 
+### Monitor vs Current node — what to trust
+
+The monitor and the **Current node** field in Overview are updated independently and may briefly show different servers — this is expected.
+
+- **Current node** reflects what the watchdog last wrote to PassWall2 UCI. It is updated every `check_interval` seconds (default 180 s). It is an *instruction*, not a measurement: it says which node the watchdog selected, but it does not confirm that traffic is actually flowing through it.
+- **Monitor** performs a real HTTP request through the live traffic path and returns the actual external IP. It is updated every `proxy_check_interval` seconds (default 120 s, minimum 60 s). It is a *measurement*.
+
+After a node switch, PassWall2 restarts briefly. During that restart window — and until the next monitor check cycle completes — the two fields may point to different nodes. This is normal and resolves on its own within one check interval.
+
+**If you want to know what proxy your traffic is actually using right now, trust the monitor.** It reflects reality, not intent.
+
 ### Important caveats
 
 - **Timing lag** — the displayed state reflects the _last completed_ check. With a 120 s interval, up to 2 minutes may pass between the actual state change and the display update.

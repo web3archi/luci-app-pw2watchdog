@@ -107,6 +107,10 @@ return view.extend({
 					_('Recommended first-time setup: enable the monitor, set your ISP direct IP range (see below), set check interval, Save & Apply. The Overview page will show the proxy status after the first check cycle.'),
 					_('How to find your direct IP range: open https://2ip.io — you will see your current external IP. Then open https://2ip.io/whois/ — find the CIDR field (e.g. 198.51.100.0/24). Copy that value into Settings → Advanced → Monitor: Direct IP ranges. You can also enter a single IP without a mask (treated as /32).'),
 					_('Timing lag: the shown state reflects the last completed check. With a 120 s interval up to 2 minutes may pass between the real state change and the display update.'),
+					_('Monitor vs Current node: the two fields update independently and may briefly show different nodes after a switch — this is expected. ' +
+					  'Current node is an instruction (what the watchdog wrote to UCI). ' +
+					  'The monitor is a measurement (real HTTP request through live traffic). ' +
+					  'If they differ, trust the monitor — it reflects what your traffic is actually using right now.'),
 					_('Shunt / split-routing caveat: if the IP-echo URL is routed directly by your shunt or routing rules, the check will always show Direct even when the proxy is working. Use a URL that is proxied in your setup.')
 				]),
 
