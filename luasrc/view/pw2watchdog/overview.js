@@ -353,7 +353,7 @@ function extractFlag(label) {
  *
  *  Технические детали (HTTP code, port, raw URL) — под <details>.
  * ------------------------------------------------------------------ */
-function renderHealthOverview(status, nodeIndex) {
+function renderHealthOverview(status, nodeIndex, detailsOpen) {
 	var pwDefault    = status.passwall_default_node  || status.current_node || '';
 	var pwLabel      = status.passwall_default_label || status.current_label || '';
 	var proxyState   = status.proxy_check_state      || '';
@@ -397,10 +397,6 @@ function renderHealthOverview(status, nodeIndex) {
 	} else {
 		humanState = _('Unknown state');                 alertClass = 'alert-message';
 	}
-
-	/* Preserve user's open/closed state of Details across refreshes */
-	var existingDetails = document.querySelector('#pw2-health details.pw2-health-details');
-	var detailsOpen = existingDetails ? existingDetails.open : false;
 
 	/* Build LuCI-styled table rows */
 	var healthTable = E('table', { 'class': 'table cbi-section-table', 'style': 'width:100%;' });
@@ -852,9 +848,11 @@ return view.extend({
 				} catch(e) {}
 				renderRuntime(obj);
 				renderHistory(currentHistoryItems);
-				/* Update health overview (always visible) */
+				/* Update health overview — preserve <details> open state across refresh */
+				var prevDetails     = healthEl.querySelector('details.pw2-health-details');
+				var prevDetailsOpen = prevDetails ? prevDetails.open : false;
 				healthEl.innerHTML = '';
-				healthEl.appendChild(renderHealthOverview(obj, nodeIndex));
+				healthEl.appendChild(renderHealthOverview(obj, nodeIndex, prevDetailsOpen));
 
 				/* Update proxy check block */
 				if (proxyCheckEnabled === '1') {
