@@ -585,9 +585,13 @@ write_status() {
 	# passwall_alive: independent liveness signal for the proxy engine.
 	# PassWall2 26.4.20 has no `/etc/init.d/passwall2 status`, so we probe
 	# the xray process directly. Cheap (~5ms), runs every write_status.
-	local _xray_alive="false"
-	pgrep -f '/xray' >/dev/null 2>&1 && _xray_alive="true"
-	json_add_string passwall_alive        "$_xray_alive"
+	# NOTE: no `local` here — some busybox ash builds choke on `local` after
+	# heredoc/json calls inside a function. Use a uniquely-prefixed global.
+	_PW2WD_XRAY_ALIVE="false"
+	if pgrep -f '/xray' >/dev/null 2>&1; then
+		_PW2WD_XRAY_ALIVE="true"
+	fi
+	json_add_string passwall_alive        "$_PW2WD_XRAY_ALIVE"
 	json_add_int    last_scan_ts          "${LAST_SCAN_TS:-0}"
 	json_add_int    last_pw2_restart      "${LAST_PW2_RESTART:-0}"
 	json_add_string proxy_check_enabled   "${PROXY_CHECK_ENABLED:-0}"
