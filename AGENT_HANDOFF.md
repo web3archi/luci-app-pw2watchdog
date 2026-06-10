@@ -191,10 +191,18 @@ cat /var/run/pw2watchdog/state
 При каждом замере монитора писать `{ts, action:"proxy_check", state, ip, node_label}`.
 Даст таймлайн: когда переключился current_node и когда монитор "догнал".
 
-**[П2] Real connectivity check в watchdog**
-Latency тест (cp.cloudflare.com) не обнаруживает "мёртвую" ноду — нода отвечает на ping но не проксирует. Инцидент 09.06: 6 минут FAILED без реакции watchdog.
+**[П2] Real connectivity check в watchdog** (повышенный приоритет)
+Latency тест (cp.cloudflare.com) не обнаруживает "мёртвую" ноду — нода отвечает на ping/tcping но не проксирует. Инцидент 09.06: 6 минут FAILED без реакции watchdog.
 Решение: curl через прокси + проверка exit IP внутри watchdog. N провалов подряд → форс-свитч.
 Точка встраивания: `_check_proxy_connection` уже вызывается в `run_once`, нужно связать результат с `choose_target`.
+Связка со скорингом (v0.4.0): результат real_connectivity должен попадать в `proxy_check_state` (FAIL → score через _pw2_proxy_score станет ниже), и через стабильность в history.jsonl.
+**Эталонный кейс — TojlU605 (AEZA Европа):**
+- inbound IP: 176.124.222.174 (IPv4)
+- реальный exit IP: 2a12:5940:d7db::2 (IPv6) — split routing у провайдера
+- watchdog находит ноду по совпадению IPv4 (UCI ↔ inbound) → считает OK
+- мониторинг видит exit IP, не сопоставляет с лейблом → "proxy без label"
+- latency-проверка проходит (туннель технически живой), но трафик не идёт
+- именно ради таких нод нужны: (1) real connectivity test, (2) stability через success rate в скоринге, (3) IPv6 поддержка в матчинге (см. П10, П11)
 
 **[П3] fail_streak / suspicion счётчик**
 Считать сколько раз подряд нода дала плохой сигнал (latency=0 или proxy_check fail).
@@ -272,8 +280,8 @@ Auto-detect direct IP — кнопка: стоп passwall2 → curl → стар
 **[П9] Auto-detect direct IP** (см. П8 — Settings)
 
 **[П10] Exit IP vs inbound IP**
-Ноды AEZA/CDN: exit IP ≠ inbound address. Монитор показывает proxy_ok без лейбла.
-Возможное решение: ASN/org матчинг через ipinfo.io вместо точного IP.
+Ноды AEZA/CDN: exit IP ≠ inbound address (см. эталонный кейс TojlU605 в П2). Монитор показывает proxy_ok без лейбла.
+Возможное решение: ASN/org матчинг через ipinfo.io вместо точного IP, либо матчинг по диапазону провайдера, либо хранение в env.static карты `inbound_ip ↔ exit_ip_pattern` (autodetect+manual override по принципам Layered Robustness).
 
 **[П11] IPv6 поддержка в поиске нод монитора**
 Текущий фильтр `*[!0-9.]*` пропускает только IPv4-адреса нод.

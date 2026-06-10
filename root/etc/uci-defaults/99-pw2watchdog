@@ -28,5 +28,50 @@ if ! uci -q get pw2watchdog.advanced > /dev/null 2>&1; then
 	EOF
 fi
 
+# Probabilistic scoring (Stage 2.A v0.4.0) — observer mode by default.
+# Layered Robustness: section absent → feature off; section present with
+# enabled=0 → feature off; enabled=1 + advisory_mode=1 → observer
+# (writes telemetry, never overrides decisions).
+if ! uci -q get pw2watchdog.scoring > /dev/null 2>&1; then
+	uci batch <<-EOF
+		set pw2watchdog.scoring=scoring
+		set pw2watchdog.scoring.enabled=0
+		set pw2watchdog.scoring.advisory_mode=1
+		set pw2watchdog.scoring.customize=0
+		set pw2watchdog.scoring.weight_latency=45
+		set pw2watchdog.scoring.weight_proxy=40
+		set pw2watchdog.scoring.weight_stability=10
+		set pw2watchdog.scoring.weight_age=5
+		set pw2watchdog.scoring.weight_iface=0
+		set pw2watchdog.scoring.critical_threshold=30
+		set pw2watchdog.scoring.preventive_gap=25
+		set pw2watchdog.scoring.relative_improvement=30
+		set pw2watchdog.scoring.min_switch_interval=60
+		set pw2watchdog.scoring.recent_switch_extra=35
+		set pw2watchdog.scoring.stability_window=20
+		set pw2watchdog.scoring.telemetry_enabled=1
+		set pw2watchdog.scoring.telemetry_max_mb=10
+	EOF
+fi
+
+# Interface anomaly detection (Stage 2.A v0.4.0) — OPT-IN, default OFF.
+# Backend-specific (sing-box PSW2_DIVERT chain). Will be enabled only after
+# pilot data analysis confirms the signal is reliable on this device.
+if ! uci -q get pw2watchdog.iface_anomaly > /dev/null 2>&1; then
+	uci batch <<-EOF
+		set pw2watchdog.iface_anomaly=iface_anomaly
+		set pw2watchdog.iface_anomaly.enabled=0
+		set pw2watchdog.iface_anomaly.customize=0
+		set pw2watchdog.iface_anomaly.source_mode=auto
+		set pw2watchdog.iface_anomaly.chain_override=
+		set pw2watchdog.iface_anomaly.counter_index=1
+		set pw2watchdog.iface_anomaly.tick_seconds=5
+		set pw2watchdog.iface_anomaly.warmup_ticks=12
+		set pw2watchdog.iface_anomaly.baseline_window=60
+		set pw2watchdog.iface_anomaly.anomaly_streak=6
+		set pw2watchdog.iface_anomaly.min_bps=100
+	EOF
+fi
+
 uci commit pw2watchdog
 exit 0

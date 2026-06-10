@@ -1,5 +1,5 @@
 #!/bin/sh
-# PW2WD_VERSION: v0.3.8
+# PW2WD_VERSION: v0.4.0-dev
 # pw2watchdog.sh — watchdog for PassWall2: latency monitoring and automatic node switching.
 #
 # Usage:
@@ -27,6 +27,9 @@ ENV_FILE="$STATE_DIR/env.static"
 STATE_FILE="$STATE_DIR/state"
 STATUS_FILE="$STATE_DIR/status.json"
 HISTORY_FILE="$STATE_DIR/history.jsonl"
+SCORES_FILE="$STATE_DIR/scores.jsonl"
+DECISIONS_FILE="$STATE_DIR/decisions.jsonl"
+SCORING_BIN="/usr/bin/pw2watchdog-scoring.sh"
 
 CURRENT_LATENCY=0
 STATUS_RUNNING="false"
@@ -205,6 +208,168 @@ _record_proxy_check_event() {
 }
 
 # ---------------------------------------------------------------------------
+# Scoring telemetry (observer mode — Stage 2.A v0.4.0)
+#
+# Two append-only JSONL streams in $STATE_DIR:
+#   scores.jsonl    — per-cycle snapshot of all node scores
+#   decisions.jsonl — per-cycle comparison: legacy_target vs scoring_target
+#
+# Both files are size-capped via _scoring_rotate (default 10 MiB, controlled
+# by UCI pw2watchdog.scoring.telemetry_max_mb). When the cap is reached we
+# keep the last 50% of the file by line count using tail+mv (atomic enough
+# for our purposes — single-writer, append-only).
+#
+# Layered Robustness: if pw2watchdog-scoring.sh is missing or fails, all
+# functions in this block degrade to no-op and never break run_once.
+# ---------------------------------------------------------------------------
+
+_scoring_rotate() {
+	local file="$1" max_bytes="$2" cur_bytes keep_lines
+	[ -f "$file" ] || return 0
+	# wc -c is OpenWrt-stock; awk would also work but wc is faster
+	cur_bytes="$(wc -c < "$file" 2>/dev/null)"
+	[ -n "$cur_bytes" ] || return 0
+	[ "$cur_bytes" -lt "$max_bytes" ] && return 0
+	keep_lines="$(wc -l < "$file" 2>/dev/null)"
+	keep_lines=$((keep_lines / 2))
+	[ "$keep_lines" -lt 100 ] && keep_lines=100
+	tail -n "$keep_lines" "$file" > "${file}.tmp" 2>/dev/null && \
+		mv "${file}.tmp" "$file"
+}
+
+# Sources scoring.sh (idempotent) and exports pw2_compute_* functions.
+# Returns 0 if scoring is usable, 1 otherwise.
+_scoring_load() {
+	[ -x "$SCORING_BIN" ] || return 1
+	if ! command -v pw2_compute_score_json >/dev/null 2>&1; then
+		# shellcheck disable=SC1090
+		. "$SCORING_BIN" 2>/dev/null || return 1
+		pw2_scoring_load_uci 2>/dev/null || return 1
+	fi
+	return 0
+}
+
+# evaluate_decision <current_node> <legacy_target> <legacy_reason>
+#   Computes scores for current + all candidates.
+#   Sets globals:
+#     SCORING_CURRENT_TOTAL   — total score for current node (0..1000) or empty
+#     SCORING_BEST_NODE       — node with highest total (excluding current)
+#     SCORING_BEST_TOTAL      — total of SCORING_BEST_NODE
+#     SCORING_VERDICT         — stay | prefer_switch | force_switch | unavailable
+#     SCORING_AGREES          — 1 if scoring would do same as legacy, 0 otherwise
+#   Writes to scores.jsonl + decisions.jsonl when telemetry_enabled=1.
+#   Never modifies TARGET_NODE / TARGET_REASON — pure observer.
+evaluate_decision() {
+	local current="$1" legacy_target="$2" legacy_reason="$3"
+	local ts node total
+	SCORING_CURRENT_TOTAL=""
+	SCORING_BEST_NODE=""
+	SCORING_BEST_TOTAL=0
+	SCORING_VERDICT="unavailable"
+	SCORING_AGREES=""
+
+	# Layered Robustness: scoring feature disabled or missing → no-op
+	[ "${SCORING_ENABLED:-0}" = "1" ] || return 0
+	_scoring_load || { log "scoring: load failed, observer disabled this cycle"; return 0; }
+
+	ts="$(date +%s)"
+
+	# Score current node
+	if [ -n "$current" ]; then
+		SCORING_CURRENT_TOTAL="$(pw2_compute_score_json "$current" 2>/dev/null | \
+			jsonfilter -e '@.total' 2>/dev/null)"
+	fi
+
+	# Find best candidate != current
+	for node in $CANDIDATES; do
+		[ "$node" = "$current" ] && continue
+		is_excluded_node "$node" 2>/dev/null && continue
+		total="$(pw2_compute_score_json "$node" 2>/dev/null | \
+			jsonfilter -e '@.total' 2>/dev/null)"
+		[ -n "$total" ] || total=0
+		if [ "$total" -gt "$SCORING_BEST_TOTAL" ]; then
+			SCORING_BEST_TOTAL="$total"
+			SCORING_BEST_NODE="$node"
+		fi
+	done
+
+	# Verdict (thresholds are 0..100 percentages, scores are 0..1000)
+	local cur_total crit_abs gap_abs rel_imp
+	cur_total="${SCORING_CURRENT_TOTAL:-0}"
+	crit_abs=$((SC_CRIT_THR * 10))            # e.g. 30% → 300
+	gap_abs=$((SC_PREV_GAP * 10))             # e.g. 25% → 250 (gap in absolute score points)
+
+	if [ -z "$SCORING_CURRENT_TOTAL" ]; then
+		SCORING_VERDICT="unavailable"
+	elif [ "$cur_total" -lt "$crit_abs" ]; then
+		SCORING_VERDICT="force_switch"
+	elif [ -n "$SCORING_BEST_NODE" ] \
+		&& [ "$SCORING_BEST_TOTAL" -gt "$cur_total" ] \
+		&& [ $((SCORING_BEST_TOTAL - cur_total)) -ge "$gap_abs" ]; then
+		# Optional: also require relative improvement
+		if [ "$cur_total" -gt 0 ]; then
+			rel_imp=$(( (SCORING_BEST_TOTAL - cur_total) * 100 / cur_total ))
+			if [ "$rel_imp" -ge "$SC_REL_IMP" ]; then
+				SCORING_VERDICT="prefer_switch"
+			else
+				SCORING_VERDICT="stay"
+			fi
+		else
+			SCORING_VERDICT="prefer_switch"
+		fi
+	else
+		SCORING_VERDICT="stay"
+	fi
+
+	# Compare with legacy decision
+	local legacy_action="stay"
+	if [ -n "$legacy_target" ] && [ "$legacy_target" != "$current" ]; then
+		legacy_action="switch"
+	fi
+	case "$SCORING_VERDICT" in
+		stay|unavailable) [ "$legacy_action" = "stay" ] && SCORING_AGREES=1 || SCORING_AGREES=0 ;;
+		prefer_switch|force_switch) [ "$legacy_action" = "switch" ] && SCORING_AGREES=1 || SCORING_AGREES=0 ;;
+	esac
+
+	# Telemetry (always-on for now; gated by SC_TELEMETRY if user disabled it)
+	[ "${SC_TELEMETRY:-1}" = "1" ] || return 0
+
+	_append_scores_line "$ts" "$current"
+	_append_decisions_line "$ts" "$current" "$legacy_target" "$legacy_reason" "$legacy_action"
+}
+
+# Internal: dumps one line with current + all candidates' scores.
+_append_scores_line() {
+	local ts="$1" current="$2" all_scores
+	mkdir -p "$STATE_DIR"
+	all_scores="$(pw2_compute_score_all_json 2>/dev/null)"
+	[ -n "$all_scores" ] || return 0
+	printf '{"ts":%d,"current":"%s","scores":%s}\n' \
+		"$ts" "$current" "$all_scores" >> "$SCORES_FILE"
+	_scoring_rotate "$SCORES_FILE" $((SC_TEL_MAX_MB * 1024 * 1024))
+}
+
+_append_decisions_line() {
+	local ts="$1" current="$2" legacy_target="$3" legacy_reason="$4" legacy_action="$5"
+	mkdir -p "$STATE_DIR"
+	json_init
+	json_add_int    ts                  "$ts"
+	json_add_string current             "$current"
+	json_add_string legacy_target       "$legacy_target"
+	json_add_string legacy_reason       "$legacy_reason"
+	json_add_string legacy_action       "$legacy_action"
+	json_add_int    current_total       "${SCORING_CURRENT_TOTAL:-0}"
+	json_add_string scoring_best_node   "${SCORING_BEST_NODE:-}"
+	json_add_int    scoring_best_total  "${SCORING_BEST_TOTAL:-0}"
+	json_add_string scoring_verdict     "$SCORING_VERDICT"
+	json_add_int    agrees              "${SCORING_AGREES:-0}"
+	json_add_string advisory_mode       "${SCORING_ADVISORY:-1}"
+	json_dump >> "$DECISIONS_FILE"
+	printf '\n' >> "$DECISIONS_FILE"
+	_scoring_rotate "$DECISIONS_FILE" $((SC_TEL_MAX_MB * 1024 * 1024))
+}
+
+# ---------------------------------------------------------------------------
 # Node label
 # ---------------------------------------------------------------------------
 node_label() {
@@ -273,6 +438,11 @@ load_cfg() {
 	config_get DIRECT_IP_RANGES              advanced direct_ip_ranges          ''
 	config_list_foreach main candidate_node append_candidate
 	config_list_foreach main exclude_node   append_exclude_node
+
+	# Scoring config (Stage 2.A v0.4.0) — observer mode by default.
+	# If scoring section doesn't exist (old install), all flags default to safe values.
+	config_get SCORING_ENABLED       scoring enabled            '0'
+	config_get SCORING_ADVISORY      scoring advisory_mode      '1'
 }
 
 # ---------------------------------------------------------------------------
@@ -1098,6 +1268,11 @@ run_once() {
 
 	apply_fallback_policy "$current"
 
+	# Probabilistic scoring — observer mode (Stage 2.A v0.4.0).
+	# Writes scores.jsonl + decisions.jsonl, never modifies TARGET_NODE.
+	# When advisory_mode=0 in a future stage, scoring may override should_switch().
+	evaluate_decision "$current" "$TARGET_NODE" "$TARGET_REASON"
+
 	if should_switch "$current" "$TARGET_NODE" "$now"; then
 		log "switch current=$current target=$TARGET_NODE reason=$TARGET_REASON best=${BEST_NODE:-none} current_latency=${CURRENT_LATENCY:-0}ms best_latency=${BEST_LATENCY:-0}ms"
 
@@ -1364,11 +1539,73 @@ daemon_loop() {
 	done
 }
 
+# ---------------------------------------------------------------------------
+# Scoring stats CLI — analyzes scores.jsonl / decisions.jsonl
+# ---------------------------------------------------------------------------
+cmd_stats() {
+	local limit="${1:-50}"
+	echo "=== scoring telemetry stats ==="
+	echo
+
+	if [ ! -f "$DECISIONS_FILE" ]; then
+		echo "no decisions.jsonl yet (need scoring.enabled=1 and at least one run)"
+		return 0
+	fi
+
+	local total agreed disagreed
+	total="$(wc -l < "$DECISIONS_FILE" 2>/dev/null)"
+	agreed="$(grep -c '"agrees":1' "$DECISIONS_FILE" 2>/dev/null)"
+	disagreed=$((total - agreed))
+	echo "decisions.jsonl: $total cycles total, agreed=$agreed disagreed=$disagreed"
+	echo "  agreement rate: $((agreed * 100 / (total > 0 ? total : 1)))%"
+	echo
+
+	echo "=== verdict distribution ==="
+	for v in stay prefer_switch force_switch unavailable; do
+		local n
+		n="$(grep -c "\"scoring_verdict\":\"$v\"" "$DECISIONS_FILE" 2>/dev/null)"
+		printf '  %-15s %d\n' "$v" "$n"
+	done
+	echo
+
+	echo "=== last $limit decisions (oldest → newest) ==="
+	echo "ts          current   cur_total  best_node  best_total  verdict          legacy  agrees"
+	tail -n "$limit" "$DECISIONS_FILE" | awk '
+	{
+		ts="-"; cur="-"; ct=0; bn="-"; bt=0; v="-"; la="-"; ag="-"
+		if (match($0, /"ts":[0-9]+/))                 { ts=substr($0,RSTART+5,RLENGTH-5) }
+		if (match($0, /"current":"[^"]*"/))           { cur=substr($0,RSTART+11,RLENGTH-12) }
+		if (match($0, /"current_total":[0-9]+/))      { ct=substr($0,RSTART+16,RLENGTH-16) }
+		if (match($0, /"scoring_best_node":"[^"]*"/)) { bn=substr($0,RSTART+21,RLENGTH-22) }
+		if (match($0, /"scoring_best_total":[0-9]+/)) { bt=substr($0,RSTART+21,RLENGTH-21) }
+		if (match($0, /"scoring_verdict":"[^"]*"/))   { v=substr($0,RSTART+19,RLENGTH-20) }
+		if (match($0, /"legacy_action":"[^"]*"/))     { la=substr($0,RSTART+17,RLENGTH-18) }
+		if (match($0, /"agrees":[0-9]/))              { ag=substr($0,RSTART+9,1) }
+		printf "%-11s %-9s %-10s %-10s %-11s %-16s %-7s %s\n", \
+			ts, cur, ct, bn, bt, v, la, ag
+	}
+	'
+	echo
+
+	if [ -f "$SCORES_FILE" ]; then
+		local scores_lines scores_size
+		scores_lines="$(wc -l < "$SCORES_FILE" 2>/dev/null)"
+		scores_size="$(wc -c < "$SCORES_FILE" 2>/dev/null)"
+		echo "scores.jsonl: $scores_lines lines, $scores_size bytes"
+	fi
+}
+
 case "$1" in
 run)    run_once    ;;
 daemon) daemon_loop ;;
+stats)
+	load_env
+	load_cfg
+	shift
+	cmd_stats "$@"
+	;;
 *)
-	echo "Usage: $0 {run|daemon}"
+	echo "Usage: $0 {run|daemon|stats [N]}"
 	exit 1
 	;;
 esac
