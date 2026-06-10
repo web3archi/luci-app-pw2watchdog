@@ -237,20 +237,27 @@ _scoring_rotate() {
 		mv "${file}.tmp" "$file"
 }
 
-# Sources scoring.sh (idempotent) and exports pw2_compute_* functions.
-# Returns 0 if scoring is usable, 1 otherwise.
-_scoring_load() {
+# Checks that scoring binary is available.
+# We DO NOT source it — scoring.sh redefines global state (CONFIG_NAME,
+# STATE_DIR, log(), etc.) that would corrupt pw2watchdog.sh runtime.
+# Instead we call it as a subprocess. The 13-node fanout is cheap (one
+# fork+exec per node, ~180s cycle) and gives perfect isolation.
+_scoring_available() {
 	[ -x "$SCORING_BIN" ] || return 1
-	if ! command -v pw2_compute_score_json >/dev/null 2>&1; then
-		# shellcheck disable=SC1090
-		. "$SCORING_BIN" 2>/dev/null || return 1
-		pw2_scoring_load_uci 2>/dev/null || return 1
-	fi
 	return 0
 }
 
+# Read a single scoring threshold/weight from UCI with fallback default.
+# Avoids sourcing scoring.sh; uses uci directly (same data, no side effects).
+_sc_uci() {
+	local key="$1" default="$2" val
+	val="$(uci -q get pw2watchdog.scoring."$key")"
+	[ -n "$val" ] && echo "$val" || echo "$default"
+}
+
 # evaluate_decision <current_node> <legacy_target> <legacy_reason>
-#   Computes scores for current + all candidates.
+#   Computes scores for current + all candidates via SUBPROCESS calls to
+#   $SCORING_BIN (isolated; no shell state pollution).
 #   Sets globals:
 #     SCORING_CURRENT_TOTAL   — total score for current node (0..1000) or empty
 #     SCORING_BEST_NODE       — node with highest total (excluding current)
@@ -261,7 +268,8 @@ _scoring_load() {
 #   Never modifies TARGET_NODE / TARGET_REASON — pure observer.
 evaluate_decision() {
 	local current="$1" legacy_target="$2" legacy_reason="$3"
-	local ts node total
+	local ts node total all_scores
+	local sc_crit_thr sc_prev_gap sc_rel_imp sc_telemetry sc_tel_max_mb
 	SCORING_CURRENT_TOTAL=""
 	SCORING_BEST_NODE=""
 	SCORING_BEST_TOTAL=0
@@ -270,22 +278,33 @@ evaluate_decision() {
 
 	# Layered Robustness: scoring feature disabled or missing → no-op
 	[ "${SCORING_ENABLED:-0}" = "1" ] || return 0
-	_scoring_load || { log "scoring: load failed, observer disabled this cycle"; return 0; }
+	_scoring_available || { log "scoring: binary missing, observer disabled"; return 0; }
 
 	ts="$(date +%s)"
 
-	# Score current node
+	# Read thresholds locally (avoid sourcing scoring.sh — it pollutes shell state)
+	sc_crit_thr="$(_sc_uci critical_threshold 30)"
+	sc_prev_gap="$(_sc_uci preventive_gap 25)"
+	sc_rel_imp="$(_sc_uci relative_improvement 30)"
+	sc_telemetry="$(_sc_uci telemetry_enabled 1)"
+	sc_tel_max_mb="$(_sc_uci telemetry_max_mb 10)"
+
+	# Single call to score_all — cheaper than N calls.
+	all_scores="$("$SCORING_BIN" score_all 2>/dev/null)"
+	[ -n "$all_scores" ] || { log "scoring: score_all returned empty"; return 0; }
+
+	# Extract current node's total from the all_scores JSON object
 	if [ -n "$current" ]; then
-		SCORING_CURRENT_TOTAL="$(pw2_compute_score_json "$current" 2>/dev/null | \
-			jsonfilter -e '@.total' 2>/dev/null)"
+		SCORING_CURRENT_TOTAL="$(printf '%s' "$all_scores" | \
+			jsonfilter -e "@['$current'].total" 2>/dev/null)"
 	fi
 
-	# Find best candidate != current
+	# Find best candidate != current (iterate candidates, not all scored nodes)
 	for node in $CANDIDATES; do
 		[ "$node" = "$current" ] && continue
 		is_excluded_node "$node" 2>/dev/null && continue
-		total="$(pw2_compute_score_json "$node" 2>/dev/null | \
-			jsonfilter -e '@.total' 2>/dev/null)"
+		total="$(printf '%s' "$all_scores" | \
+			jsonfilter -e "@['$node'].total" 2>/dev/null)"
 		[ -n "$total" ] || total=0
 		if [ "$total" -gt "$SCORING_BEST_TOTAL" ]; then
 			SCORING_BEST_TOTAL="$total"
@@ -296,8 +315,8 @@ evaluate_decision() {
 	# Verdict (thresholds are 0..100 percentages, scores are 0..1000)
 	local cur_total crit_abs gap_abs rel_imp
 	cur_total="${SCORING_CURRENT_TOTAL:-0}"
-	crit_abs=$((SC_CRIT_THR * 10))            # e.g. 30% → 300
-	gap_abs=$((SC_PREV_GAP * 10))             # e.g. 25% → 250 (gap in absolute score points)
+	crit_abs=$((sc_crit_thr * 10))            # e.g. 30% → 300
+	gap_abs=$((sc_prev_gap * 10))             # e.g. 25% → 250 (gap in absolute score points)
 
 	if [ -z "$SCORING_CURRENT_TOTAL" ]; then
 		SCORING_VERDICT="unavailable"
@@ -306,10 +325,9 @@ evaluate_decision() {
 	elif [ -n "$SCORING_BEST_NODE" ] \
 		&& [ "$SCORING_BEST_TOTAL" -gt "$cur_total" ] \
 		&& [ $((SCORING_BEST_TOTAL - cur_total)) -ge "$gap_abs" ]; then
-		# Optional: also require relative improvement
 		if [ "$cur_total" -gt 0 ]; then
 			rel_imp=$(( (SCORING_BEST_TOTAL - cur_total) * 100 / cur_total ))
-			if [ "$rel_imp" -ge "$SC_REL_IMP" ]; then
+			if [ "$rel_imp" -ge "$sc_rel_imp" ]; then
 				SCORING_VERDICT="prefer_switch"
 			else
 				SCORING_VERDICT="stay"
@@ -331,26 +349,26 @@ evaluate_decision() {
 		prefer_switch|force_switch) [ "$legacy_action" = "switch" ] && SCORING_AGREES=1 || SCORING_AGREES=0 ;;
 	esac
 
-	# Telemetry (always-on for now; gated by SC_TELEMETRY if user disabled it)
-	[ "${SC_TELEMETRY:-1}" = "1" ] || return 0
+	# Telemetry
+	[ "$sc_telemetry" = "1" ] || return 0
 
-	_append_scores_line "$ts" "$current"
-	_append_decisions_line "$ts" "$current" "$legacy_target" "$legacy_reason" "$legacy_action"
+	_append_scores_line "$ts" "$current" "$all_scores" "$sc_tel_max_mb"
+	_append_decisions_line "$ts" "$current" "$legacy_target" "$legacy_reason" "$legacy_action" "$sc_tel_max_mb"
 }
 
 # Internal: dumps one line with current + all candidates' scores.
 _append_scores_line() {
-	local ts="$1" current="$2" all_scores
+	local ts="$1" current="$2" all_scores="$3" max_mb="$4"
 	mkdir -p "$STATE_DIR"
-	all_scores="$(pw2_compute_score_all_json 2>/dev/null)"
 	[ -n "$all_scores" ] || return 0
 	printf '{"ts":%d,"current":"%s","scores":%s}\n' \
 		"$ts" "$current" "$all_scores" >> "$SCORES_FILE"
-	_scoring_rotate "$SCORES_FILE" $((SC_TEL_MAX_MB * 1024 * 1024))
+	_scoring_rotate "$SCORES_FILE" $((max_mb * 1024 * 1024))
 }
 
 _append_decisions_line() {
-	local ts="$1" current="$2" legacy_target="$3" legacy_reason="$4" legacy_action="$5"
+	local ts="$1" current="$2" legacy_target="$3" legacy_reason="$4"
+	local legacy_action="$5" max_mb="$6"
 	mkdir -p "$STATE_DIR"
 	json_init
 	json_add_int    ts                  "$ts"
@@ -366,7 +384,7 @@ _append_decisions_line() {
 	json_add_string advisory_mode       "${SCORING_ADVISORY:-1}"
 	json_dump >> "$DECISIONS_FILE"
 	printf '\n' >> "$DECISIONS_FILE"
-	_scoring_rotate "$DECISIONS_FILE" $((SC_TEL_MAX_MB * 1024 * 1024))
+	_scoring_rotate "$DECISIONS_FILE" $((max_mb * 1024 * 1024))
 }
 
 # ---------------------------------------------------------------------------
