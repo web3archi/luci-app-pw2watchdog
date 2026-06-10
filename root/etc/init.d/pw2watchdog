@@ -1,5 +1,5 @@
 #!/bin/sh /etc/rc.common
-# PW2WD_VERSION: v0.3.8
+# PW2WD_VERSION: v0.4.0-dev
 
 START=98
 STOP=15
@@ -10,6 +10,39 @@ SUBSCRIBE=/usr/bin/pw2watchdog-subscribe.sh
 
 PID_WATCHDOG=/var/run/pw2watchdog/watchdog.pid
 PID_SCANNER=/var/run/pw2watchdog/scanner.pid
+
+ENV_FILE=/var/run/pw2watchdog/env.static
+
+# Cleanup stale blackhole nft rule using env-resolved table/chain (Layered Robustness:
+# fall back to env.static so this works on any PassWall2 fork / non-standard naming).
+# If env.static is absent (first boot, env resolver not yet run) — skip cleanup with
+# a logger note instead of guessing.
+cleanup_stale_blackhole() {
+	local phase="$1"  # "start" | "stop"
+	local state_file="/var/run/pw2watchdog/state"
+	[ -f "$state_file" ] || return 0
+
+	local handle
+	handle="$(grep 'STATIC_BH_HANDLE' "$state_file" | cut -d"'" -f2)"
+	[ -n "$handle" ] && [ "$handle" != "unknown" ] || return 0
+
+	if [ ! -f "$ENV_FILE" ]; then
+		logger -t pw2watchdog "$phase: env.static missing, skipping nft cleanup (handle=$handle)"
+		return 0
+	fi
+
+	# shellcheck disable=SC1090
+	. "$ENV_FILE"
+	local tbl="$PW2_NFTABLE_NAME"
+	local chn="$PW2_NFTCHAIN_MANGLE"
+	if [ -z "$tbl" ] || [ -z "$chn" ]; then
+		logger -t pw2watchdog "$phase: nft table/chain not resolved in env.static, skipping cleanup (handle=$handle)"
+		return 0
+	fi
+
+	nft delete rule inet "$tbl" "$chn" handle "$handle" 2>/dev/null && \
+		logger -t pw2watchdog "$phase: removed stale blackhole nft handle $handle from $tbl/$chn"
+}
 
 start() {
 	# Remove any stale procd registration to prevent ubus conflicts
@@ -24,16 +57,8 @@ start() {
 
 	mkdir -p /var/run/pw2watchdog
 
-	# Clean up stale blackhole rule from previous run
-	local state_file="/var/run/pw2watchdog/state"
-	if [ -f "$state_file" ]; then
-		local handle
-		handle="$(grep 'STATIC_BH_HANDLE' "$state_file" | cut -d"'" -f2)"
-		if [ -n "$handle" ] && [ "$handle" != "unknown" ] && [ "$handle" != "" ]; then
-			nft delete rule inet passwall2 PSW2_MANGLE handle "$handle" 2>/dev/null && \
-				logger -t pw2watchdog "start: removed stale blackhole nft handle $handle"
-		fi
-	fi
+	# Clean up stale blackhole rule from previous run (Layered Robustness: use env.static)
+	cleanup_stale_blackhole start
 
 	# Subscribe install (idempotent)
 	if [ -x "$SUBSCRIBE" ]; then
@@ -70,16 +95,8 @@ start() {
 stop() {
 	logger -t pw2watchdog "Stopping service."
 
-	# Clean up static blackhole nft rule
-	local state_file="/var/run/pw2watchdog/state"
-	if [ -f "$state_file" ]; then
-		local handle
-		handle="$(grep 'STATIC_BH_HANDLE' "$state_file" | cut -d"'" -f2)"
-		if [ -n "$handle" ] && [ "$handle" != "unknown" ] && [ "$handle" != "" ]; then
-			nft delete rule inet passwall2 PSW2_MANGLE handle "$handle" 2>/dev/null && \
-				logger -t pw2watchdog "stop: removed blackhole nft handle $handle"
-		fi
-	fi
+	# Clean up static blackhole nft rule (Layered Robustness: use env.static)
+	cleanup_stale_blackhole stop
 
 	# Kill all instances (by name — covers manually started processes too)
 	killall pw2watchdog.sh pw2watchdog-scanner.sh 2>/dev/null
