@@ -158,6 +158,13 @@ pw2watchdog.advanced: init_script, test_script, nftable_name, nftchain_mangle,
 - Chain: `PSW2_MANGLE`, FWMARK: `0x50535732`
 - `passwall2.rulenode.default_node` — активная нода
 
+**КОНВЕНЦИЯ: `$PW2_NFTABLE_NAME` всегда без кавычек в nft-командах.**
+Содержит два слова (`inet passwall2`) и обязано word-splitting в family+name. Пример в pw2watchdog.sh:
+```sh
+nft insert rule $PW2_NFTABLE_NAME "$PW2_NFTCHAIN_MANGLE" counter drop
+```
+Это единственное место где кавычки вокруг переменной ломают логику. shellcheck: `# shellcheck disable=SC2086`.
+
 **Runtime файлы на роутере:**
 - State: `/var/run/pw2watchdog/state`
 - Status: `/var/run/pw2watchdog/status.json`

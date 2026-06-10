@@ -40,7 +40,10 @@ cleanup_stale_blackhole() {
 		return 0
 	fi
 
-	nft delete rule inet "$tbl" "$chn" handle "$handle" 2>/dev/null && \
+	# IMPORTANT: $tbl deliberately unquoted (word-splits to family+name, e.g. 'inet passwall2').
+	# This matches the convention used throughout pw2watchdog.sh.
+	# shellcheck disable=SC2086
+	nft delete rule $tbl "$chn" handle "$handle" 2>/dev/null && \
 		logger -t pw2watchdog "$phase: removed stale blackhole nft handle $handle from $tbl/$chn"
 }
 
