@@ -1,6 +1,8 @@
 'use strict';
 'require view';
 
+var PW2WD_VERSION = 'v0.3.8';  /* PW2WD_VERSION_MARKER */
+
 function renderNote(title, items) {
 	return E('div', { 'class': 'cbi-section' }, [
 		E('h3', title),

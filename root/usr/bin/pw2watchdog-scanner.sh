@@ -1,4 +1,5 @@
 #!/bin/sh
+# PW2WD_VERSION: v0.3.8
 
 . /lib/functions.sh
 . /usr/share/libubox/jshn.sh

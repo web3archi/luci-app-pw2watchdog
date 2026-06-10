@@ -1,4 +1,5 @@
 #!/bin/sh
+# PW2WD_VERSION: v0.3.8
 # pw2watchdog.sh — watchdog for PassWall2: latency monitoring and automatic node switching.
 #
 # Usage:

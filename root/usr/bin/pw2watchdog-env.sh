@@ -1,4 +1,5 @@
 #!/bin/sh
+# PW2WD_VERSION: v0.3.8
 # pw2watchdog-env.sh — service discovery for pw2watchdog
 #
 # Finds all PassWall2/OpenWrt paths and parameters programmatically.
@@ -18,6 +19,11 @@
 #   pw2_get_tproxy_port   — current tproxy port from passwall2 var file
 #   pw2_is_proxy_ready    — check if the port is actually listening right now
 #   pw2_wait_proxy_ready  — wait for proxy to become ready with timeout
+
+# Single source of truth for the build version. Every file in this project
+# also carries a "# PW2WD_VERSION: ..." or "var PW2WD_VERSION = ...;" marker;
+# `make bump VERSION=...` updates them all in lockstep.
+PW2WD_VERSION="v0.3.8"
 
 CONFIG_NAME="pw2watchdog"
 STATE_DIR="/var/run/pw2watchdog"
@@ -308,6 +314,7 @@ HW_RECOMMENDED_CANDIDATES='${HW_RECOMMENDED_CANDIDATES}'
 PW2_ENV_ERRORS='${errors}'
 PW2_ENV_WARNINGS='${warnings}'
 PW2_ENV_TS='$(date +%s)'
+PW2WD_VERSION='${PW2WD_VERSION}'
 ENVEOF
 
 	if [ "$errors" -gt 0 ]; then

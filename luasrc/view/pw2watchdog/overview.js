@@ -3,6 +3,8 @@
 'require uci';
 'require fs';
 
+var PW2WD_VERSION = 'v0.3.8';  /* PW2WD_VERSION_MARKER */
+
 /* ------------------------------------------------------------------ *
  *  "Measurement in progress" banner
  * ------------------------------------------------------------------ */
@@ -771,7 +773,10 @@ return view.extend({
 					])
 				])
 			]),
-			renderActions()
+			renderActions(),
+			E('div', {
+				'style': 'margin-top:12px;padding:6px 4px;color:#888;font-size:11px;text-align:right;font-family:monospace;'
+			}, 'pw2watchdog ' + PW2WD_VERSION)
 		]);
 
 		renderRuntime(status);

@@ -1,4 +1,5 @@
 #!/bin/sh
+# PW2WD_VERSION: v0.3.8
 # pw2watchdog-subscribe.sh — PassWall2 subscription auto-update helper
 #
 # Updates all PassWall2 subscriptions (subscribe_list entries) and

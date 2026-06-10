@@ -5,6 +5,8 @@
 'require ui';
 'require fs';
 
+var PW2WD_VERSION = 'v0.3.8';  /* PW2WD_VERSION_MARKER */
+
 function getNodeLabel(nodeId) {
 	if (!nodeId) return '';
 	if (nodeId === '_direct')    return _('Direct');
