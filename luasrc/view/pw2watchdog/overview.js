@@ -354,9 +354,10 @@ function extractFlag(label) {
  *  Технические детали (HTTP code, port, raw URL) — под <details>.
  * ------------------------------------------------------------------ */
 function renderHealthOverview(status, nodeIndex) {
-	var pwDefault    = status.passwall_default_node  || '';
-	var pwLabel      = status.passwall_default_label || '';
+	var pwDefault    = status.passwall_default_node  || status.current_node || '';
+	var pwLabel      = status.passwall_default_label || status.current_label || '';
 	var proxyState   = status.proxy_check_state      || '';
+	var proxyEnabled = status.proxy_check_enabled    || '0';
 	var proxyIp      = status.proxy_check_ip         || '';
 	var proxyNode    = status.proxy_check_node_label || '';
 	var proxyTs      = Number(status.proxy_check_ts  || 0);
@@ -371,116 +372,82 @@ function renderHealthOverview(status, nodeIndex) {
 	var connUrl      = uci.get('pw2watchdog', 'connectivity', 'test_url')
 	                || 'https://www.google.com/generate_204';
 
-	/* Определение "человеческого" состояния */
-	var humanState, hBg, hBorder, hColor, hIcon;
-
-	if (!pwDefault) {
-		humanState = _('No node configured');
-		hIcon = '⚫'; hBg = '#f5f5f5'; hBorder = '#bbb'; hColor = '#666';
+	/* Determine human-readable state + LuCI alert class */
+	var humanState, alertClass;
+	if (proxyEnabled !== '1') {
+		humanState = _('Check disabled');                alertClass = 'alert-message';
+	} else if (!pwDefault) {
+		humanState = _('No node configured');            alertClass = 'alert-message';
 	} else if (proxyState === 'blackhole') {
-		humanState = _('Blocked (emergency)');
-		hIcon = '⬛'; hBg = '#343a40'; hBorder = '#343a40'; hColor = '#fff';
+		humanState = _('Blocked (emergency)');           alertClass = 'alert-message danger';
 	} else if (proxyState === 'proxy_no_204') {
-		humanState = _('Connection broken');
-		hIcon = '❌'; hBg = '#f8d7da'; hBorder = '#dc3545'; hColor = '#842029';
+		humanState = _('Connection broken');             alertClass = 'alert-message danger';
 	} else if (proxyState === 'direct') {
-		humanState = _('Traffic leak');
-		hIcon = '⚠'; hBg = '#f8d7da'; hBorder = '#dc3545'; hColor = '#842029';
+		humanState = _('Traffic leak');                  alertClass = 'alert-message danger';
 	} else if (proxyState === 'no_response') {
-		humanState = _('No response (will retry)');
-		hIcon = '…'; hBg = '#fff3cd'; hBorder = '#ffb900'; hColor = '#856404';
-	} else if (proxyState === 'proxy_ok' && connEnabled === '1' && connHttp && connHttp !== '204') {
-		/* этот случай теоретически не приходит (backend выставит proxy_no_204),
-		 * но на случай race condition обрабатываем явно */
-		humanState = _('Connection broken');
-		hIcon = '❌'; hBg = '#f8d7da'; hBorder = '#dc3545'; hColor = '#842029';
+		humanState = _('No response (will retry)');      alertClass = 'alert-message warning';
 	} else if (proxyState === 'proxy_ok' && proxyIp && !proxyNode) {
-		/* IP не похож ни на одну ноду (CDN-shared IP) */
-		humanState = _('Working (non-standard exit)');
-		hIcon = '⚡'; hBg = '#fff3cd'; hBorder = '#ffb900'; hColor = '#856404';
+		humanState = _('Working (non-standard exit)');   alertClass = 'alert-message warning';
 	} else if (proxyState === 'proxy_ok') {
-		humanState = _('Working');
-		hIcon = '✅'; hBg = '#d4edda'; hBorder = '#46b450'; hColor = '#1a7f3c';
+		humanState = _('Working');                       alertClass = 'alert-message success';
 	} else if (lastSwitch > 0 && (nowSec - lastSwitch) < 90) {
-		/* Только что переключились — проверка ещё не доехала */
-		humanState = _('Checking…');
-		hIcon = '⏳'; hBg = '#fff3cd'; hBorder = '#ffb900'; hColor = '#856404';
+		humanState = _('Checking\u2026');               alertClass = 'alert-message warning';
 	} else if (!proxyState || proxyState === 'unknown') {
-		humanState = _('Check disabled');
-		hIcon = '⚫'; hBg = '#f5f5f5'; hBorder = '#bbb'; hColor = '#666';
+		humanState = _('Pending check\u2026');          alertClass = 'alert-message';
 	} else {
-		humanState = _('Unknown state');
-		hIcon = '?'; hBg = '#f5f5f5'; hBorder = '#bbb'; hColor = '#666';
+		humanState = _('Unknown state');                 alertClass = 'alert-message';
 	}
 
-	/* Строка 1: Текущая нода (UCI source of truth) */
-	var currentNodeRow;
-	if (pwDefault) {
-		var flag = extractFlag(pwLabel);
-		var name = pwLabel ? pwLabel.replace(/[\uD83C][\uDDE6-\uDDFF][\uD83C][\uDDE6-\uDDFF]/g, '').trim() : pwDefault;
-		currentNodeRow = E('div', {
-			'style': 'display:flex;align-items:baseline;gap:10px;margin-bottom:8px;'
-		}, [
-			E('span', { 'style': 'min-width:140px;color:#666;font-size:0.92em;' }, _('Current node:')),
-			E('span', { 'style': 'font-size:1.15em;font-weight:600;' }, [
-				flag ? E('span', { 'style': 'margin-right:6px;' }, flag) : '',
-				name
-			])
-		]);
+	/* Build LuCI-styled table rows */
+	var healthTable = E('table', { 'class': 'table cbi-section-table', 'style': 'width:100%;' });
+
+	/* Row 1: Current node (from UCI) */
+	var currentMeta = getNodeMeta(nodeIndex, pwDefault);
+	var currentValueEl;
+	if (pwDefault && currentMeta && currentMeta.label) {
+		currentValueEl = E('span', {}, currentMeta.label);
+	} else if (pwDefault) {
+		currentValueEl = E('span', {}, pwLabel || pwDefault);
 	} else {
-		currentNodeRow = E('div', {
-			'style': 'display:flex;align-items:baseline;gap:10px;margin-bottom:8px;'
-		}, [
-			E('span', { 'style': 'min-width:140px;color:#666;font-size:0.92em;' }, _('Current node:')),
-			E('span', { 'style': 'color:#999;font-style:italic;' }, _('not configured'))
-		]);
+		currentValueEl = E('em', { 'style': 'color:#999;' }, _('not configured'));
+	}
+	healthTable.appendChild(makeRow(
+		_('Current node'),
+		currentValueEl,
+		_('Active PassWall2 default node (from UCI \u2014 the source of truth).')
+	));
+
+	/* Row 2: State badge using native LuCI alert classes */
+	var stateValueEl = E('span', { 'class': alertClass, 'style': 'display:inline-block;padding:4px 10px;margin:0;font-weight:600;' }, humanState);
+	healthTable.appendChild(makeRow(
+		_('State'),
+		stateValueEl,
+		_('What the watchdog sees right now. Plain language \u2014 see Details for raw values.')
+	));
+
+	/* Row 3: Real exit (only if proxy_check is enabled and has data) */
+	if (proxyEnabled === '1') {
+		var realValueEl;
+		if (proxyIp) {
+			var exitName = proxyNode || _('unrecognised exit');
+			realValueEl = E('span', {}, [
+				E('span', {}, exitName),
+				E('span', { 'style': 'color:#666;' }, ' \u2014 '),
+				E('code', { 'style': 'font-family:monospace;' }, proxyIp)
+			]);
+		} else {
+			realValueEl = E('em', { 'style': 'color:#999;' }, _('pending check\u2026'));
+		}
+		healthTable.appendChild(makeRow(
+			_('Real exit'),
+			realValueEl,
+			_('Observed external IP and matching subscription node (via the IP-echo service).')
+		));
 	}
 
-	/* Строка 2: Состояние — бэйдж с иконкой */
-	var stateRow = E('div', {
-		'style': 'display:flex;align-items:center;gap:10px;margin-bottom:8px;'
-	}, [
-		E('span', { 'style': 'min-width:140px;color:#666;font-size:0.92em;' }, _('State:')),
-		E('span', {
-			'style': 'display:inline-flex;align-items:center;gap:8px;padding:4px 12px;' +
-			         'border:2px solid ' + hBorder + ';background:' + hBg + ';' +
-			         'color:' + hColor + ';border-radius:5px;font-weight:600;'
-		}, [
-			E('span', { 'style': 'font-size:1.1em;' }, hIcon),
-			E('span', {}, humanState)
-		])
-	]);
-
-	/* Строка 3: Реальный выход */
-	var exitRow;
-	if (proxyIp) {
-		var exitFlag = extractFlag(proxyNode);
-		var exitName = proxyNode ? proxyNode.replace(/[\uD83C][\uDDE6-\uDDFF][\uD83C][\uDDE6-\uDDFF]/g, '').trim() : '';
-		exitRow = E('div', {
-			'style': 'display:flex;align-items:baseline;gap:10px;'
-		}, [
-			E('span', { 'style': 'min-width:140px;color:#666;font-size:0.92em;' }, _('Real exit:')),
-			E('span', { 'style': 'font-size:0.98em;' }, [
-				exitFlag ? E('span', { 'style': 'margin-right:5px;' }, exitFlag) : '',
-				exitName ? exitName + ' — ' : '',
-				E('span', { 'style': 'font-family:monospace;color:#555;' }, proxyIp)
-			])
-		]);
-	} else if (proxyState === 'no_response') {
-		exitRow = E('div', {
-			'style': 'display:flex;align-items:baseline;gap:10px;'
-		}, [
-			E('span', { 'style': 'min-width:140px;color:#666;font-size:0.92em;' }, _('Real exit:')),
-			E('span', { 'style': 'color:#999;font-style:italic;' }, _('pending check…'))
-		]);
-	} else {
-		exitRow = '';
-	}
-
-	/* Предупреждение о расхождении config vs real (если находим ноду по IP, и она не = pwDefault) */
-	var mismatchWarn = '';
+	/* Mismatch warning: configured node vs real exit */
+	var mismatchAlert = '';
 	if (pwDefault && proxyState === 'proxy_ok' && proxyIp && proxyNode) {
-		/* Найдём node_id по лейблу из nodeIndex */
 		var matchedId = '';
 		if (nodeIndex) {
 			for (var nid in nodeIndex) {
@@ -490,45 +457,43 @@ function renderHealthOverview(status, nodeIndex) {
 			}
 		}
 		if (matchedId && matchedId !== pwDefault && lastSwitch > 0 && (nowSec - lastSwitch) >= 90) {
-			mismatchWarn = E('div', {
-				'style': 'margin-top:10px;padding:8px 12px;border:1px solid #ffb900;' +
-				         'background:#fff8e1;color:#856404;border-radius:4px;font-size:0.9em;'
-			}, _('Configured node and real exit do not match — click "Details" for diagnostics.'));
+			mismatchAlert = E('div', { 'class': 'alert-message warning', 'style': 'margin-top:0.5em;' },
+				_('Configured node and real exit do not match \u2014 expand Details for diagnostics.')
+			);
 		}
 	}
 
-	/* "Подробности" — технические детали */
+	/* Details accordion — technical fields */
 	var fmtTs = proxyTs > 0 ? new Date(proxyTs * 1000).toLocaleString() : '-';
-	var detailLines = [
-		[ _('Backend state'),      proxyState || '-' ],
-		[ _('IP check URL'),       checkUrl ],
-		[ _('Last IP check'),      fmtTs ]
-	];
+	var detailLines = [];
+	detailLines.push([ _('Backend state'),       proxyState || '-' ]);
+	if (proxyEnabled === '1') {
+		detailLines.push([ _('IP-echo URL'),     checkUrl ]);
+		detailLines.push([ _('Last IP check'),   fmtTs ]);
+	}
 	if (connEnabled === '1') {
-		detailLines.push([ _('Live test'), connUrl ]);
+		detailLines.push([ _('Live test URL'),   connUrl ]);
 		detailLines.push([ _('Live test result'),
-			connReason ? (connReason + (connPort ? (' (port ' + connPort + ')') : '')) : '-' ]);
+			connReason
+				? (connReason + (connPort ? (' (port ' + connPort + ')') : ''))
+				: '-' ]);
 	} else {
-		detailLines.push([ _('Live test'), _('disabled — enable in Advanced settings') ]);
+		detailLines.push([ _('Live test'),       _('disabled \u2014 enable in Settings \u2192 Live connectivity check') ]);
 	}
 
-	var detailsTable = E('table', { 'style': 'width:100%;font-size:0.88em;margin-top:8px;' });
+	var detailsTable = E('table', { 'class': 'table cbi-section-table', 'style': 'width:100%;margin-top:0.5em;' });
 	detailLines.forEach(function(pair) {
 		detailsTable.appendChild(E('tr', {}, [
-			E('td', { 'style': 'padding:4px 8px 4px 0;color:#666;width:35%;' }, pair[0]),
-			E('td', { 'style': 'padding:4px 0;font-family:monospace;color:#333;word-break:break-all;' }, pair[1])
+			E('td', { 'style': 'font-weight:600;width:22%;padding:6px 8px;color:#666;' }, pair[0]),
+			E('td', { 'style': 'padding:6px 8px;font-family:monospace;word-break:break-all;color:#333;' }, pair[1])
 		]));
 	});
 
-	return E('div', {
-		'style': 'padding:14px 16px;border:1px solid #ddd;background:#fafafa;border-radius:6px;'
-	}, [
-		currentNodeRow,
-		stateRow,
-		exitRow,
-		mismatchWarn,
-		E('details', { 'style': 'margin-top:10px;' }, [
-			E('summary', { 'style': 'cursor:pointer;color:#666;font-size:0.88em;' }, _('Details')),
+	return E('div', {}, [
+		healthTable,
+		mismatchAlert,
+		E('details', { 'style': 'margin-top:0.5em;' }, [
+			E('summary', { 'style': 'cursor:pointer;padding:0.3em 0;' }, _('Details')),
 			detailsTable
 		])
 	]);
