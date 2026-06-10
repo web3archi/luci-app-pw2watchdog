@@ -582,6 +582,12 @@ write_status() {
 	json_add_int    cpu_threads           "${CPU_THREADS:-0}"
 	json_add_int    ram_total_mb          "${RAM_TOTAL_MB:-0}"
 	json_add_string running               "${STATUS_RUNNING:-false}"
+	# passwall_alive: independent liveness signal for the proxy engine.
+	# PassWall2 26.4.20 has no `/etc/init.d/passwall2 status`, so we probe
+	# the xray process directly. Cheap (~5ms), runs every write_status.
+	local _xray_alive="false"
+	pgrep -f '/xray' >/dev/null 2>&1 && _xray_alive="true"
+	json_add_string passwall_alive        "$_xray_alive"
 	json_add_int    last_scan_ts          "${LAST_SCAN_TS:-0}"
 	json_add_int    last_pw2_restart      "${LAST_PW2_RESTART:-0}"
 	json_add_string proxy_check_enabled   "${PROXY_CHECK_ENABLED:-0}"

@@ -367,6 +367,7 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 	var proxyIp      = status.proxy_check_ip         || '';
 	var proxyNode    = status.proxy_check_node_label || '';
 	var proxyTs      = Number(status.proxy_check_ts  || 0);
+	var pwAlive      = status.passwall_alive         || '';
 	var connEnabled  = status.conn_check_enabled     || '0';
 	var connHttp     = status.conn_check_http        || '';
 	var connReason   = status.conn_check_reason      || '';
@@ -380,7 +381,9 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 
 	/* Determine human-readable state + LuCI alert class */
 	var humanState, alertClass;
-	if (proxyEnabled !== '1') {
+	if (pwAlive === 'false') {
+		humanState = _('Proxy engine not running');      alertClass = 'alert-message danger';
+	} else if (proxyEnabled !== '1') {
 		humanState = _('Check disabled');                alertClass = 'alert-message';
 	} else if (!pwDefault) {
 		humanState = _('No node configured');            alertClass = 'alert-message';

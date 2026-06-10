@@ -187,7 +187,9 @@
 		var last = Number(s.last_switch || 0);
 		var now  = Math.floor(Date.now() / 1000);
 		var pw   = s.passwall_default_node || s.current_node || '';
+		var alive = s.passwall_alive || '';
 
+		if (alive === 'false')                                           return ['Proxy engine not running', 'danger'];
 		if (en !== '1')                                                  return ['Check disabled',           'neutral'];
 		if (!pw)                                                         return ['No node configured',       'neutral'];
 		if (st === 'blackhole')                                          return ['Blocked (emergency)',      'danger'];
