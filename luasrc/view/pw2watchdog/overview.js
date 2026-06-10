@@ -398,6 +398,10 @@ function renderHealthOverview(status, nodeIndex) {
 		humanState = _('Unknown state');                 alertClass = 'alert-message';
 	}
 
+	/* Preserve user's open/closed state of Details across refreshes */
+	var existingDetails = document.querySelector('#pw2-health details.pw2-health-details');
+	var detailsOpen = existingDetails ? existingDetails.open : false;
+
 	/* Build LuCI-styled table rows */
 	var healthTable = E('table', { 'class': 'table cbi-section-table', 'style': 'width:100%;' });
 
@@ -409,7 +413,7 @@ function renderHealthOverview(status, nodeIndex) {
 	} else if (pwDefault) {
 		currentValueEl = E('span', {}, pwLabel || pwDefault);
 	} else {
-		currentValueEl = E('em', { 'style': 'color:#999;' }, _('not configured'));
+		currentValueEl = E('em', {}, _('not configured'));
 	}
 	healthTable.appendChild(makeRow(
 		_('Current node'),
@@ -432,11 +436,11 @@ function renderHealthOverview(status, nodeIndex) {
 			var exitName = proxyNode || _('unrecognised exit');
 			realValueEl = E('span', {}, [
 				E('span', {}, exitName),
-				E('span', { 'style': 'color:#666;' }, ' \u2014 '),
+				E('span', {}, ' \u2014 '),
 				E('code', { 'style': 'font-family:monospace;' }, proxyIp)
 			]);
 		} else {
-			realValueEl = E('em', { 'style': 'color:#999;' }, _('pending check\u2026'));
+			realValueEl = E('em', {}, _('pending check\u2026'));
 		}
 		healthTable.appendChild(makeRow(
 			_('Real exit'),
@@ -463,7 +467,7 @@ function renderHealthOverview(status, nodeIndex) {
 		}
 	}
 
-	/* Details accordion — technical fields */
+	/* Details accordion — technical fields. Inherit colors from LuCI theme. */
 	var fmtTs = proxyTs > 0 ? new Date(proxyTs * 1000).toLocaleString() : '-';
 	var detailLines = [];
 	detailLines.push([ _('Backend state'),       proxyState || '-' ]);
@@ -483,19 +487,22 @@ function renderHealthOverview(status, nodeIndex) {
 
 	var detailsTable = E('table', { 'class': 'table cbi-section-table', 'style': 'width:100%;margin-top:0.5em;' });
 	detailLines.forEach(function(pair) {
-		detailsTable.appendChild(E('tr', {}, [
-			E('td', { 'style': 'font-weight:600;width:22%;padding:6px 8px;color:#666;' }, pair[0]),
-			E('td', { 'style': 'padding:6px 8px;font-family:monospace;word-break:break-all;color:#333;' }, pair[1])
+		detailsTable.appendChild(E('tr', { 'class': 'tr cbi-section-table-row' }, [
+			E('td', { 'class': 'td', 'style': 'font-weight:600;width:30%;padding:6px 8px;' }, pair[0]),
+			E('td', { 'class': 'td', 'style': 'padding:6px 8px;font-family:monospace;word-break:break-all;' }, pair[1])
 		]));
 	});
+
+	var detailsEl = E('details', { 'class': 'pw2-health-details', 'style': 'margin-top:0.5em;' }, [
+		E('summary', { 'style': 'cursor:pointer;padding:0.3em 0;font-weight:600;' }, _('Details')),
+		detailsTable
+	]);
+	if (detailsOpen) detailsEl.open = true;
 
 	return E('div', {}, [
 		healthTable,
 		mismatchAlert,
-		E('details', { 'style': 'margin-top:0.5em;' }, [
-			E('summary', { 'style': 'cursor:pointer;padding:0.3em 0;' }, _('Details')),
-			detailsTable
-		])
+		detailsEl
 	]);
 }
 
