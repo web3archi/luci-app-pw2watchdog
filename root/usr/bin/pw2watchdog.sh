@@ -452,7 +452,9 @@ load_cfg() {
 	config_get ROTATE_FINAL_ACTION           main rotate_final_action           'blackhole'
 	config_get PW2_RESTART_ON_FAILURE        advanced pw2_restart_on_failure    '0'
 	config_get INITIAL_DEFAULT_NODE          main initial_default_node          ''
-	config_get PROXY_CHECK_ENABLED           advanced proxy_check_enabled       '0'
+	# Default '1': proxy_check is the primary Health signal. Section may pre-exist
+	# from older installs without this option — explicit default keeps it ON.
+	config_get PROXY_CHECK_ENABLED           advanced proxy_check_enabled       '1'
 	config_get PROXY_CHECK_INTERVAL          advanced proxy_check_interval      '120'
 	config_get PROXY_CHECK_URL               advanced proxy_check_url           'https://api.ipify.org'
 	config_get DIRECT_IP_RANGES              advanced direct_ip_ranges          ''
@@ -466,8 +468,10 @@ load_cfg() {
 
 	# Real connectivity check (Stage 2.A v0.4.0) — curl 204 probe through SOCKS.
 	# Detects "tunnel alive but real traffic not flowing" — the TojlU605 edge case.
-	# Layered Robustness: section absent → feature off (default).
-	config_get CONN_CHECK_ENABLED      connectivity enabled             '0'
+	# Layered Robustness: connectivity check is now ON by default; user can disable in UI.
+	# Default '1' for fresh installs; if 'connectivity' section is missing entirely,
+	# config_get still returns this default. Disable explicitly via UI if not needed.
+	config_get CONN_CHECK_ENABLED      connectivity enabled             '1'
 	config_get CONN_CHECK_SOCKS_AUTO   connectivity socks_port_auto     '1'
 	config_get CONN_CHECK_SOCKS_MANUAL connectivity socks_port_manual   ''
 	config_get CONN_CHECK_URL          connectivity test_url            'https://www.google.com/generate_204'
