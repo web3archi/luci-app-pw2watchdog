@@ -54,6 +54,21 @@ if ! uci -q get pw2watchdog.scoring > /dev/null 2>&1; then
 	EOF
 fi
 
+# Real connectivity check (Stage 2.A v0.4.0) — curl 204 probe via SOCKS.
+# Layered Robustness: section absent → off. Detects TojlU605-style cases
+# where ipify reports proxy_ok but real HTTP traffic doesn't flow.
+# Default OFF — enable explicitly in Advanced Settings.
+if ! uci -q get pw2watchdog.connectivity > /dev/null 2>&1; then
+	uci batch <<-EOF
+		set pw2watchdog.connectivity=connectivity
+		set pw2watchdog.connectivity.enabled=0
+		set pw2watchdog.connectivity.socks_port_auto=1
+		set pw2watchdog.connectivity.socks_port_manual=
+		set pw2watchdog.connectivity.test_url=https://www.google.com/generate_204
+		set pw2watchdog.connectivity.timeout=5
+	EOF
+fi
+
 # Interface anomaly detection (Stage 2.A v0.4.0) — OPT-IN, default OFF.
 # Backend-specific (sing-box PSW2_DIVERT chain). Will be enabled only after
 # pilot data analysis confirms the signal is reliable on this device.

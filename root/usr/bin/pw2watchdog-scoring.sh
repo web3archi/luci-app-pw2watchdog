@@ -180,11 +180,13 @@ pw2_score_proxy() {
 		[ "$age" -gt 300 ] && { echo 500; return 0; }
 	fi
 	case "$state" in
-		proxy_ok)    echo 1000 ;;
-		direct)      echo 0    ;;   # catastrophic: traffic bypassing proxy
-		no_response) echo 200  ;;
-		'')          echo 500  ;;   # no data
-		*)           echo 400  ;;   # any other unknown state — slight penalty
+		proxy_ok)     echo 1000 ;;
+		proxy_no_204) echo 150  ;;   # tunnel up but real traffic doesn't flow (TojlU605 case)
+		direct)       echo 0    ;;   # catastrophic: traffic bypassing proxy
+		no_response)  echo 200  ;;
+		blackhole)    echo 500  ;;   # DROP active — not a node fault, neutral
+		'')           echo 500  ;;   # no data
+		*)            echo 400  ;;   # any other unknown state — slight penalty
 	esac
 }
 

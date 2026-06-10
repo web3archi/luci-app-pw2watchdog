@@ -463,6 +463,15 @@ load_cfg() {
 	# If scoring section doesn't exist (old install), all flags default to safe values.
 	config_get SCORING_ENABLED       scoring enabled            '0'
 	config_get SCORING_ADVISORY      scoring advisory_mode      '1'
+
+	# Real connectivity check (Stage 2.A v0.4.0) — curl 204 probe through SOCKS.
+	# Detects "tunnel alive but real traffic not flowing" — the TojlU605 edge case.
+	# Layered Robustness: section absent → feature off (default).
+	config_get CONN_CHECK_ENABLED      connectivity enabled             '0'
+	config_get CONN_CHECK_SOCKS_AUTO   connectivity socks_port_auto     '1'
+	config_get CONN_CHECK_SOCKS_MANUAL connectivity socks_port_manual   ''
+	config_get CONN_CHECK_URL          connectivity test_url            'https://www.google.com/generate_204'
+	config_get CONN_CHECK_TIMEOUT      connectivity timeout             '5'
 }
 
 # ---------------------------------------------------------------------------
@@ -559,6 +568,10 @@ write_status() {
 	json_add_string proxy_check_ip         "${PROXY_CHECK_IP:-}"
 	json_add_string proxy_check_node_label "${PROXY_CHECK_NODE_LABEL:-}"
 	json_add_int    proxy_check_ts         "${LAST_PROXY_CHECK_TS:-0}"
+	json_add_string conn_check_enabled     "${CONN_CHECK_ENABLED:-0}"
+	json_add_string conn_check_port        "${CONN_CHECK_PORT:-}"
+	json_add_string conn_check_http        "${CONN_CHECK_HTTP:-}"
+	json_add_string conn_check_reason      "${CONN_CHECK_REASON:-}"
 	json_dump > "$STATUS_FILE"
 }
 
@@ -1413,6 +1426,86 @@ _ip_in_cidr() {
 #   blackhole — STATIC_BH_HANDLE is set (nft DROP rule active)
 #   disabled  — PROXY_CHECK_ENABLED=0
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# _autodetect_socks_port: find PassWall2's local SOCKS inbound port.
+#
+# Layered Robustness:
+#   1) socks_port_manual (UCI override) — if set, use as-is.
+#   2) passwall2.@global[0].node_socks_port — canonical source of truth.
+#   3) netstat fallback: pick the lowest 127.0.0.1 TCP LISTEN port held by
+#      xray/sing-box/v2ray (filters out 1041/15353 service ports).
+#
+# Outputs the port number to stdout, or empty string if nothing found.
+# ---------------------------------------------------------------------------
+_autodetect_socks_port() {
+	local port=""
+
+	# 1) Manual override always wins
+	if [ -n "${CONN_CHECK_SOCKS_MANUAL:-}" ]; then
+		printf '%s' "$CONN_CHECK_SOCKS_MANUAL"
+		return 0
+	fi
+
+	# 2) PassWall2 UCI — canonical, what the daemon actually uses
+	port="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.@global[0].node_socks_port" 2>/dev/null)"
+	if [ -n "$port" ] && [ "$port" -gt 0 ] 2>/dev/null; then
+		printf '%s' "$port"
+		return 0
+	fi
+
+	# 3) netstat fallback — lowest 127.0.0.1 LISTEN owned by proxy engine
+	port="$(netstat -tlnp 2>/dev/null \
+		| awk '/127\.0\.0\.1:/ && /(xray|sing-box|v2ray)/ {
+			split($4, a, ":"); print a[length(a)]
+		}' \
+		| sort -n \
+		| awk 'NR==1 && $1!=15353 && $1!=1041 {print; exit}')"
+
+	printf '%s' "${port:-}"
+}
+
+# ---------------------------------------------------------------------------
+# _check_real_connectivity: probe via SOCKS that real HTTP traffic flows.
+#
+# Returns 0 on success (HTTP 204), 1 on any failure.
+# Sets globals:
+#   CONN_CHECK_PORT — detected SOCKS port
+#   CONN_CHECK_HTTP — received HTTP code (or 000 on transport error)
+#   CONN_CHECK_REASON — short human reason
+#
+# Detects the TojlU605-style edge case: ipify returns proxy IP (tunnel up),
+# but real traffic doesn't flow (e.g., IPv4-in/IPv6-out split, broken routing).
+# ---------------------------------------------------------------------------
+_check_real_connectivity() {
+	CONN_CHECK_PORT="$(_autodetect_socks_port)"
+	CONN_CHECK_HTTP=""
+	CONN_CHECK_REASON=""
+
+	if [ -z "$CONN_CHECK_PORT" ]; then
+		CONN_CHECK_REASON="no_socks_port"
+		return 1
+	fi
+
+	local url="${CONN_CHECK_URL:-https://www.google.com/generate_204}"
+	local tmo="${CONN_CHECK_TIMEOUT:-5}"
+	local code
+
+	code="$(curl --proxy "socks5h://127.0.0.1:${CONN_CHECK_PORT}" \
+		-m "$tmo" -s -o /dev/null \
+		-w '%{http_code}' "$url" 2>/dev/null)"
+
+	CONN_CHECK_HTTP="${code:-000}"
+
+	if [ "$CONN_CHECK_HTTP" = "204" ]; then
+		CONN_CHECK_REASON="http_204"
+		return 0
+	fi
+
+	CONN_CHECK_REASON="http_${CONN_CHECK_HTTP}"
+	return 1
+}
+
 _check_proxy_connection() {
 	if [ "${PROXY_CHECK_ENABLED:-0}" != "1" ]; then
 		PROXY_CHECK_STATE=""
@@ -1541,6 +1634,22 @@ _check_proxy_connection() {
 		PROXY_CHECK_STATE="proxy_ok"
 		pc_reason="proxy_ok ext_ip=${ext_ip} (no node match, no direct ranges configured)"
 		log "proxy_check: ${pc_reason}"
+	fi
+
+	# Real connectivity probe (Stage 2.A v0.4.0).
+	# Detects TojlU605-style edge case: ipify says proxy_ok but real HTTP
+	# traffic doesn't flow (broken routing / IPv4-in IPv6-out / silent drop).
+	# Only meaningful when the IP check already said proxy_ok — if ipify saw
+	# direct/no_response, no point bothering the SOCKS port.
+	if [ "${CONN_CHECK_ENABLED:-0}" = "1" ] && [ "$PROXY_CHECK_STATE" = "proxy_ok" ]; then
+		if _check_real_connectivity; then
+			pc_reason="${pc_reason} + 204_ok via :${CONN_CHECK_PORT}"
+			log "proxy_check: real_connectivity OK (port=${CONN_CHECK_PORT} url=${CONN_CHECK_URL})"
+		else
+			PROXY_CHECK_STATE="proxy_no_204"
+			pc_reason="proxy_no_204 ext_ip=${PROXY_CHECK_IP} ${CONN_CHECK_REASON} (port=${CONN_CHECK_PORT:-?})"
+			log "proxy_check: real_connectivity FAIL (${CONN_CHECK_REASON} port=${CONN_CHECK_PORT:-?}) -- tunnel up but traffic not flowing"
+		fi
 	fi
 
 	_record_proxy_check_event "$PROXY_CHECK_STATE" "$PROXY_CHECK_IP" \
