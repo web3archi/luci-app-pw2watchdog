@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PassWall2 Watchdog — Health</title>
+<style>
+	:root {
+		--bg:        #1c1f24;
+		--card:      #262a31;
+		--card-2:    #2f343c;
+		--text:      #e6e8eb;
+		--muted:     #9aa0a6;
+		--border:    #3a3f48;
+		--ok-bg:     #1f6e3a;
+		--ok-fg:     #d4f3df;
+		--warn-bg:   #8a6500;
+		--warn-fg:   #fff3cd;
+		--danger-bg: #8a1c2a;
+		--danger-fg: #ffd6dc;
+		--neutral-bg:#3a3f48;
+		--neutral-fg:#cbd0d6;
+	}
+	@media (prefers-color-scheme: light) {
+		:root {
+			--bg:        #f5f5f5;
+			--card:      #ffffff;
+			--card-2:    #fafafa;
+			--text:      #1a1a1a;
+			--muted:     #666;
+			--border:    #ddd;
+			--ok-bg:     #d4edda;
+			--ok-fg:     #1a7f3c;
+			--warn-bg:   #fff3cd;
+			--warn-fg:   #856404;
+			--danger-bg: #f8d7da;
+			--danger-fg: #842029;
+			--neutral-bg:#e9ecef;
+			--neutral-fg:#495057;
+		}
+	}
+	* { box-sizing: border-box; }
+	html, body {
+		margin: 0; padding: 0;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+		background: var(--bg); color: var(--text);
+		font-size: 14px;
+	}
+	.wrap {
+		max-width: 720px;
+		margin: 20px auto;
+		padding: 0 16px;
+	}
+	.card {
+		background: var(--card);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 16px 18px;
+		margin-bottom: 12px;
+	}
+	h1 {
+		font-size: 16px;
+		font-weight: 600;
+		margin: 0 0 12px 0;
+		color: var(--text);
+	}
+	.subtitle {
+		font-size: 12px;
+		color: var(--muted);
+		margin-bottom: 14px;
+	}
+	table {
+		width: 100%;
+		border-collapse: collapse;
+	}
+	td {
+		padding: 8px 6px;
+		vertical-align: top;
+		border-bottom: 1px solid var(--border);
+	}
+	tr:last-child td { border-bottom: none; }
+	td.lbl {
+		width: 36%;
+		color: var(--muted);
+		font-weight: 600;
+	}
+	td.val { color: var(--text); }
+	.badge {
+		display: inline-block;
+		padding: 4px 12px;
+		border-radius: 4px;
+		font-weight: 600;
+		font-size: 13px;
+		line-height: 1.4;
+	}
+	.badge.ok      { background: var(--ok-bg);      color: var(--ok-fg); }
+	.badge.warn    { background: var(--warn-bg);    color: var(--warn-fg); }
+	.badge.danger  { background: var(--danger-bg);  color: var(--danger-fg); }
+	.badge.neutral { background: var(--neutral-bg); color: var(--neutral-fg); }
+	code {
+		font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+		font-size: 12.5px;
+		background: var(--card-2);
+		padding: 1px 5px;
+		border-radius: 3px;
+		word-break: break-all;
+	}
+	details {
+		margin-top: 6px;
+		padding-top: 4px;
+	}
+	details summary {
+		cursor: pointer;
+		padding: 6px 0;
+		font-weight: 600;
+		color: var(--muted);
+		font-size: 13px;
+		user-select: none;
+	}
+	details summary:hover { color: var(--text); }
+	details table { margin-top: 4px; }
+	details td { padding: 6px; font-size: 12.5px; }
+	details td.lbl { width: 35%; }
+	details td.val { font-family: ui-monospace, monospace; word-break: break-all; }
+	.warn-line {
+		margin-top: 10px;
+		padding: 10px 12px;
+		background: var(--warn-bg);
+		color: var(--warn-fg);
+		border-radius: 4px;
+		font-size: 13px;
+	}
+	.foot {
+		text-align: right;
+		font-size: 11px;
+		color: var(--muted);
+		margin-top: 6px;
+	}
+	.err {
+		padding: 12px;
+		background: var(--danger-bg);
+		color: var(--danger-fg);
+		border-radius: 4px;
+	}
+</style>
+</head>
+<body>
+<div class="wrap">
+	<div class="card">
+		<h1>PassWall2 Watchdog — Health</h1>
+		<div class="subtitle">Live status. Updates every 5 seconds.</div>
+		<div id="root">Loading…</div>
+		<div class="foot" id="foot"></div>
+	</div>
+</div>
+<script>
+(function() {
+	'use strict';
+	var ENDPOINT = '/cgi-bin/pw2health';
+	var REFRESH_MS = 5000;
+
+	function el(tag, attrs, kids) {
+		var e = document.createElement(tag);
+		if (attrs) for (var k in attrs) {
+			if (k === 'class') e.className = attrs[k];
+			else e.setAttribute(k, attrs[k]);
+		}
+		if (kids) (Array.isArray(kids) ? kids : [kids]).forEach(function(k) {
+			if (k == null) return;
+			if (typeof k === 'string') e.appendChild(document.createTextNode(k));
+			else e.appendChild(k);
+		});
+		return e;
+	}
+
+	function fmtTs(t) {
+		t = Number(t || 0);
+		if (!t) return '-';
+		return new Date(t * 1000).toLocaleString();
+	}
+
+	function pickState(s) {
+		var en   = s.proxy_check_enabled || '0';
+		var st   = s.proxy_check_state   || '';
+		var ip   = s.proxy_check_ip      || '';
+		var node = s.proxy_check_node_label || '';
+		var last = Number(s.last_switch || 0);
+		var now  = Math.floor(Date.now() / 1000);
+		var pw   = s.passwall_default_node || s.current_node || '';
+
+		if (en !== '1')                                                  return ['Check disabled',           'neutral'];
+		if (!pw)                                                         return ['No node configured',       'neutral'];
+		if (st === 'blackhole')                                          return ['Blocked (emergency)',      'danger'];
+		if (st === 'proxy_no_204')                                       return ['Connection broken',        'danger'];
+		if (st === 'direct')                                             return ['Traffic leak',             'danger'];
+		if (st === 'no_response')                                        return ['No response (will retry)', 'warn'];
+		if (st === 'proxy_ok' && ip && !node)                            return ['Working (non-standard exit)', 'warn'];
+		if (st === 'proxy_ok')                                           return ['Working',                  'ok'];
+		if (last > 0 && (now - last) < 90)                               return ['Checking…',                'warn'];
+		if (!st || st === 'unknown')                                     return ['Pending check…',           'neutral'];
+		return ['Unknown state', 'neutral'];
+	}
+
+	var prevDetailsOpen = false;
+
+	function render(s) {
+		var root = document.getElementById('root');
+		var prev = root.querySelector('details');
+		if (prev) prevDetailsOpen = prev.open;
+
+		var st = pickState(s);
+		var pwLabel = s.passwall_default_label || s.current_label || s.passwall_default_node || '-';
+		var rxIp    = s.proxy_check_ip || '';
+		var rxNode  = s.proxy_check_node_label || '';
+		var lastSw  = fmtTs(s.last_switch);
+		var lastRs  = s.last_reason || '-';
+
+		var rows = [];
+
+		rows.push(el('tr', null, [
+			el('td', { 'class': 'lbl' }, 'Current node'),
+			el('td', { 'class': 'val' }, pwLabel)
+		]));
+
+		rows.push(el('tr', null, [
+			el('td', { 'class': 'lbl' }, 'State'),
+			el('td', { 'class': 'val' }, el('span', { 'class': 'badge ' + st[1] }, st[0]))
+		]));
+
+		if (s.proxy_check_enabled === '1') {
+			var rxVal;
+			if (rxIp) {
+				rxVal = el('span', null, [
+					rxNode || 'unrecognised exit',
+					' — ',
+					el('code', null, rxIp)
+				]);
+			} else {
+				rxVal = el('em', null, 'pending check…');
+			}
+			rows.push(el('tr', null, [
+				el('td', { 'class': 'lbl' }, 'Real exit'),
+				el('td', { 'class': 'val' }, rxVal)
+			]));
+		}
+
+		rows.push(el('tr', null, [
+			el('td', { 'class': 'lbl' }, 'Last node switch'),
+			el('td', { 'class': 'val' }, lastSw)
+		]));
+
+		rows.push(el('tr', null, [
+			el('td', { 'class': 'lbl' }, 'Last switch reason'),
+			el('td', { 'class': 'val' }, lastRs)
+		]));
+
+		var mainTbl = el('table', null, rows);
+
+		// Mismatch warning: configured node vs real exit
+		var mismatch = null;
+		var pwNode = s.passwall_default_node || '';
+		if (pwNode && s.proxy_check_state === 'proxy_ok' && rxIp && rxNode &&
+		    pwLabel && rxNode && pwLabel.trim() !== rxNode.trim() &&
+		    Number(s.last_switch || 0) > 0 &&
+		    (Math.floor(Date.now() / 1000) - Number(s.last_switch)) >= 90) {
+			mismatch = el('div', { 'class': 'warn-line' },
+				'Configured node and real exit do not match — see Details below.'
+			);
+		}
+
+		// Details
+		var dRows = [];
+		dRows.push(el('tr', null, [
+			el('td', { 'class': 'lbl' }, 'Backend state'),
+			el('td', { 'class': 'val' }, s.proxy_check_state || '-')
+		]));
+		if (s.proxy_check_enabled === '1') {
+			dRows.push(el('tr', null, [
+				el('td', { 'class': 'lbl' }, 'Last IP check'),
+				el('td', { 'class': 'val' }, fmtTs(s.proxy_check_ts))
+			]));
+		}
+		if (s.conn_check_enabled === '1') {
+			var live = s.conn_check_reason || '-';
+			if (s.conn_check_port) live += ' (port ' + s.conn_check_port + ')';
+			dRows.push(el('tr', null, [
+				el('td', { 'class': 'lbl' }, 'Live test'),
+				el('td', { 'class': 'val' }, live)
+			]));
+		}
+		dRows.push(el('tr', null, [
+			el('td', { 'class': 'lbl' }, 'Current node ID'),
+			el('td', { 'class': 'val' }, pwNode || '-')
+		]));
+		dRows.push(el('tr', null, [
+			el('td', { 'class': 'lbl' }, 'Watchdog running'),
+			el('td', { 'class': 'val' }, s.running === 'true' ? 'yes' : 'no')
+		]));
+
+		var det = el('details', null, [
+			el('summary', null, 'Details'),
+			el('table', null, dRows)
+		]);
+		if (prevDetailsOpen) det.open = true;
+
+		root.innerHTML = '';
+		root.appendChild(mainTbl);
+		if (mismatch) root.appendChild(mismatch);
+		root.appendChild(det);
+
+		document.getElementById('foot').textContent =
+			'Last refresh: ' + new Date().toLocaleTimeString();
+	}
+
+	function renderError(msg) {
+		var root = document.getElementById('root');
+		root.innerHTML = '';
+		root.appendChild(el('div', { 'class': 'err' }, 'Cannot fetch status: ' + msg));
+	}
+
+	function tick() {
+		fetch(ENDPOINT, { cache: 'no-store' })
+			.then(function(r) {
+				if (!r.ok) throw new Error('HTTP ' + r.status);
+				return r.json();
+			})
+			.then(render)
+			.catch(function(e) { renderError(e.message || String(e)); });
+	}
+
+	tick();
+	setInterval(tick, REFRESH_MS);
+})();
+</script>
+</body>
+</html>

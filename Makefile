@@ -27,6 +27,10 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_BIN) ./root/etc/init.d/pw2watchdog           $(1)/etc/init.d/pw2watchdog
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) ./root/etc/uci-defaults/99-pw2watchdog  $(1)/etc/uci-defaults/99-pw2watchdog
+	$(INSTALL_DIR) $(1)/www
+	$(INSTALL_DATA) ./root/www/pw2widget.html              $(1)/www/pw2widget.html
+	$(INSTALL_DIR) $(1)/www/cgi-bin
+	$(INSTALL_BIN) ./root/www/cgi-bin/pw2health            $(1)/www/cgi-bin/pw2health
 endef
 
 # $(eval $(call BuildPackage,$(PKG_NAME)))

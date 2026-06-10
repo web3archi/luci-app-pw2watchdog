@@ -327,7 +327,13 @@ function renderActions() {
 			E('a', {
 				'class': 'btn cbi-button cbi-button-action',
 				'href': L.url('admin/services/passwall2')
-			}, _('Open PassWall2'))
+			}, _('Open PassWall2')),
+			E('a', {
+				'class': 'btn cbi-button cbi-button-action',
+				'href': '/pw2widget.html',
+				'target': '_blank',
+				'rel': 'noopener'
+			}, _('Open Health widget'))
 		])
 	]);
 }
@@ -502,56 +508,6 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 	]);
 }
 
-function renderProxyCheckState(state, ip, ts, checkUrl, nodeLabel) {
-	var cfg = {
-		proxy_ok:  { bg: '#d4edda', border: '#46b450', color: '#1a7f3c', icon: '✓', label: 'Proxy OK' },
-		direct:    { bg: '#f8d7da', border: '#dc3545', color: '#842029', icon: '✗', label: 'Direct / No proxy' },
-		blackhole: { bg: '#343a40', border: '#343a40', color: '#fff',    icon: '⬛', label: 'Blackhole' },
-		checking:  { bg: '#fff3cd', border: '#ffb900', color: '#856404', icon: '…', label: 'Checking…' },
-		unknown:   { bg: '#f5f5f5', border: '#bbb',    color: '#666',    icon: '?',      label: 'Unknown' }
-	};
-	var c = cfg[state] || cfg.unknown;
-	var fmtTs = ts > 0 ? new Date(ts * 1000).toLocaleString() : '-';
-
-	/* Node info line: flag + label + (IP) */
-	var nodeInfoEl = '';
-	if (state === 'proxy_ok' && nodeLabel) {
-		var flag = extractFlag(nodeLabel);
-		var name = nodeLabel.replace(/[\uD83C][\uDDE6-\uDDFF][\uD83C][\uDDE6-\uDDFF]/g, '').trim();
-		nodeInfoEl = E('span', {
-			'style': 'display:block;margin-top:6px;font-size:0.92em;font-weight:500;color:' + c.color + ';'
-		}, [
-			flag ? E('span', { 'style': 'font-size:1.2em;margin-right:5px;' }, flag) : '',
-			name,
-			ip ? E('span', { 'style': 'font-weight:400;opacity:0.75;margin-left:6px;' }, '(' + ip + ')') : ''
-		]);
-	} else if (state === 'proxy_ok' && ip) {
-		/* IP only — node not found in UCI */
-		nodeInfoEl = E('span', {
-			'style': 'display:block;margin-top:6px;font-size:0.92em;font-weight:400;opacity:0.8;color:' + c.color + ';'
-		}, ip);
-	}
-
-	return E('div', { 'style': 'margin-top:4px;' }, [
-		E('div', {
-			'style': 'display:inline-flex;align-items:center;gap:10px;' +
-			         'padding:10px 16px;border:2px solid ' + c.border + ';' +
-			         'background:' + c.bg + ';color:' + c.color + ';' +
-			         'border-radius:6px;font-size:1em;font-weight:600;'
-		}, [
-			E('span', { 'style': 'font-size:1.3em;' }, c.icon),
-			E('div', {}, [
-				E('span', {}, c.label),
-				nodeInfoEl
-			])
-		]),
-		E('div', { 'style': 'margin-top:6px;font-size:0.85em;color:#666;' }, [
-			_('Last checked: ') + fmtTs,
-			checkUrl ? (' — ' + checkUrl) : ''
-		])
-	]);
-}
-
 return view.extend({
 	handleSave: null,
 	handleSaveApply: null,
@@ -575,8 +531,6 @@ return view.extend({
 		var nodeSelectionMode = uci.get('pw2watchdog', 'main', 'node_selection')  || 'auto';
 		var fallbackActionCfg = uci.get('pw2watchdog', 'main', 'fallback_action') || 'blackhole';
 		var subAutoUpdate     = uci.get('pw2watchdog', 'advanced', 'sub_auto_update') || '0';
-		var proxyCheckEnabled = uci.get('pw2watchdog', 'advanced', 'proxy_check_enabled') || '0';
-		var proxyCheckUrl     = uci.get('pw2watchdog', 'advanced', 'proxy_check_url')     || 'https://api.ipify.org';
 
 		var status = {};
 		try { status = data[2] || {}; } catch(e) {}
@@ -600,7 +554,6 @@ return view.extend({
 
 		var runtimeTable     = E('table', { 'class': 'table cbi-section-table', 'style': 'width:100%;' });
 		var historyContainer = E('div',   { 'id': 'pw2-history-container' });
-		var proxyCheckEl     = E('div',   { 'id': 'pw2-proxy-check' });
 		var healthEl         = E('div',   { 'id': 'pw2-health' });
 		var lastRefreshEl    = E('span',  {}, '-');
 		var subValueCell     = E('td',    { 'style': 'width:40%;padding:8px;vertical-align:top;' }, '-');
@@ -854,17 +807,6 @@ return view.extend({
 				healthEl.innerHTML = '';
 				healthEl.appendChild(renderHealthOverview(obj, nodeIndex, prevDetailsOpen));
 
-				/* Update proxy check block */
-				if (proxyCheckEnabled === '1') {
-					proxyCheckEl.innerHTML = '';
-					proxyCheckEl.appendChild(renderProxyCheckState(
-						obj.proxy_check_state      || 'unknown',
-						obj.proxy_check_ip         || '',
-						Number(obj.proxy_check_ts  || 0),
-						proxyCheckUrl,
-						obj.proxy_check_node_label || ''
-					));
-				}
 				/* Update excess banner (manual mode only) */
 				if (nodeSelectionMode === 'manual') {
 					excessBannerContainer.innerHTML = '';
@@ -948,15 +890,6 @@ return view.extend({
 		renderRuntime(status);
 		renderHistory(historyItems);
 		healthEl.appendChild(renderHealthOverview(status, nodeIndex));
-		if (proxyCheckEnabled === '1') {
-			proxyCheckEl.appendChild(renderProxyCheckState(
-				status.proxy_check_state      || 'unknown',
-				status.proxy_check_ip         || '',
-				Number(status.proxy_check_ts  || 0),
-				proxyCheckUrl,
-				status.proxy_check_node_label || ''
-			));
-		}
 		window.setInterval(function() {
 			refreshAll().then(function() { updateSaveBtn(); });
 		}, 5000);

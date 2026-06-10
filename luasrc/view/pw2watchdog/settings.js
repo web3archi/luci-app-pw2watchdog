@@ -458,34 +458,34 @@ return view.extend({
 		};
 
 		/* ── Monitor proxy connection ─────────────────────────────────── */
-		o = adv.option(form.Flag, 'proxy_check_enabled', _('Monitor proxy connection'));
+		o = adv.option(form.Flag, 'proxy_check_enabled', _('Health: proxy IP check'));
 		o.description = _(
-			'Periodically check whether traffic is going through the proxy by comparing ' +
-			'the external IP from an IP-echo service against the local WAN IP. ' +
-			'Result shown in Overview. Activate with Save & Apply.'
+			'Periodically compare the external IP from an IP-echo service against the local WAN IP ' +
+			'to detect direct/proxy state. Feeds the Health card on Overview and the /pw2widget.html widget. ' +
+			'Disable only for debugging \u2014 Health turns into "Check disabled" without this.'
 		);
-		o.default = '0';
+		o.default = '1';
 
-		o = adv.option(form.Value, 'proxy_check_interval', _('Monitor: check interval (s)'));
+		o = adv.option(form.Value, 'proxy_check_interval', _('Health: IP check interval (s)'));
 		o.datatype    = 'min(60)';
 		o.placeholder = '120';
-		o.description = _('How often to check proxy connection. Minimum 60 s.');
+		o.description = _('How often to run the IP-echo check. Minimum 60 s.');
 		o.depends('proxy_check_enabled', '1');
 
-		o = adv.option(form.Value, 'proxy_check_url', _('Monitor: IP-echo URL'));
+		o = adv.option(form.Value, 'proxy_check_url', _('Health: IP-echo URL'));
 		o.placeholder = 'https://api.ipify.org';
 		o.description = _(
 			'URL returning the client external IP as plain text (e.g. https://api.ipify.org). ' +
-			'Use a URL that is proxied in your setup (not in your direct/shunt list).'
+			'Must be a URL that is proxied in your setup (not in your direct/shunt list).'
 		);
 		o.depends('proxy_check_enabled', '1');
 
-		o = adv.option(form.Value, 'direct_ip_ranges', _('Monitor: Direct IP ranges (CIDR)'));
+		o = adv.option(form.Value, 'direct_ip_ranges', _('Health: Home/ISP direct IP ranges (CIDR)'));
 		o.placeholder = '198.51.100.0/24 203.0.113.0/24';
 		o.description = _(
-			'Space-separated list of CIDR ranges that belong to your ISP / direct connection. ' +
-			'If the external IP falls into one of these ranges the monitor shows "Direct". ' +
-			'Leave empty to rely on node matching only (proxy nodes from PassWall2 subscription are always detected automatically). ' +
+			'Space-separated list of CIDR ranges that belong to your ISP / home direct connection. ' +
+			'If the external IP falls into one of these ranges, Health reports "Traffic leak". ' +
+			'Leave empty to rely on node-label matching only (proxy nodes from PassWall2 subscription are always detected automatically). ' +
 			'To find your range: run <code>curl https://ipinfo.io/&lt;your-ip&gt;</code> and look at the <em>org</em> / <em>prefix</em> field.'
 		);
 		o.depends('proxy_check_enabled', '1');

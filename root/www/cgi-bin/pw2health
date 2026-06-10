@@ -1,0 +1,19 @@
+#!/bin/sh
+# pw2health — read-only JSON endpoint for /pw2widget.html
+# Returns the current pw2watchdog status.json with CORS headers so the
+# widget can be embedded from any page on the LAN.
+#
+# uhttpd serves this via /cgi-bin/pw2health (executable bit required).
+
+STATUS_FILE='/var/run/pw2watchdog/status.json'
+
+printf 'Content-Type: application/json; charset=utf-8\r\n'
+printf 'Cache-Control: no-store, no-cache, must-revalidate\r\n'
+printf 'Access-Control-Allow-Origin: *\r\n'
+printf '\r\n'
+
+if [ -r "$STATUS_FILE" ]; then
+	cat "$STATUS_FILE"
+else
+	printf '{"error":"status.json not available","running":"false"}\n'
+fi
