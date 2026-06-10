@@ -454,9 +454,14 @@ load_cfg() {
 	config_get INITIAL_DEFAULT_NODE          main initial_default_node          ''
 	# Default '1': proxy_check is the primary Health signal. Section may pre-exist
 	# from older installs without this option — explicit default keeps it ON.
+	# Belt-and-suspenders: config_get default arg is unreliable under busybox ash
+	# when section type ≠ 'config' — so we also apply ${VAR:=default} guard.
 	config_get PROXY_CHECK_ENABLED           advanced proxy_check_enabled       '1'
+	: ${PROXY_CHECK_ENABLED:=1}
 	config_get PROXY_CHECK_INTERVAL          advanced proxy_check_interval      '120'
+	: ${PROXY_CHECK_INTERVAL:=120}
 	config_get PROXY_CHECK_URL               advanced proxy_check_url           'https://api.ipify.org'
+	: ${PROXY_CHECK_URL:=https://api.ipify.org}
 	config_get DIRECT_IP_RANGES              advanced direct_ip_ranges          ''
 	config_list_foreach main candidate_node append_candidate
 	config_list_foreach main exclude_node   append_exclude_node
@@ -472,10 +477,14 @@ load_cfg() {
 	# Default '1' for fresh installs; if 'connectivity' section is missing entirely,
 	# config_get still returns this default. Disable explicitly via UI if not needed.
 	config_get CONN_CHECK_ENABLED      connectivity enabled             '1'
+	: ${CONN_CHECK_ENABLED:=1}
 	config_get CONN_CHECK_SOCKS_AUTO   connectivity socks_port_auto     '1'
+	: ${CONN_CHECK_SOCKS_AUTO:=1}
 	config_get CONN_CHECK_SOCKS_MANUAL connectivity socks_port_manual   ''
 	config_get CONN_CHECK_URL          connectivity test_url            'https://www.google.com/generate_204'
+	: ${CONN_CHECK_URL:=https://www.google.com/generate_204}
 	config_get CONN_CHECK_TIMEOUT      connectivity timeout             '5'
+	: ${CONN_CHECK_TIMEOUT:=5}
 }
 
 # ---------------------------------------------------------------------------
