@@ -160,12 +160,16 @@ pw2_score_latency() {
 	fi
 }
 
-# Proxy: only meaningful for current_node. For others → neutral 500.
-# Reads status.json.proxy_check_state (proxy_ok/direct/no_response/...).
+# Proxy: only meaningful for the node PassWall2 actually routes through.
+# For others → neutral 500.
+# Reads status.json.proxy_check_state (proxy_ok/proxy_no_204/direct/...).
+# Prefers passwall_default_node (source of truth from UCI) over current_node
+# (watchdog's internal cache, may be stale after manual switches in LuCI).
 pw2_score_proxy() {
 	local node="$1"
 	local current state ts now age
-	current="$(pw2_st_get current_node)"
+	current="$(pw2_st_get passwall_default_node)"
+	[ -z "$current" ] && current="$(pw2_st_get current_node)"
 	if [ "$node" != "$current" ]; then
 		# We can't probe non-current nodes without switching → neutral.
 		echo 500

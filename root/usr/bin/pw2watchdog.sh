@@ -536,6 +536,14 @@ write_status() {
 	json_add_string passwall_section      "${PASSWALL_SECTION:-}"
 	json_add_string current_node          "${current:-}"
 	json_add_string current_label         "$(node_label "$current")"
+	# passwall_default_node: source of truth from PassWall2 UCI itself.
+	# Read fresh on every write_status (UCI lookups are cheap, in-memory).
+	# This decouples UI display from the watchdog's internal cache, fixing
+	# the v0.3.7 "current shows stale node" class of bugs.
+	local pw_default
+	pw_default="$(uci -q get "${PASSWALL_CONFIG}.${PASSWALL_SECTION}.default_node" 2>/dev/null)"
+	json_add_string passwall_default_node  "${pw_default:-}"
+	json_add_string passwall_default_label "$(node_label "$pw_default")"
 	json_add_int    current_latency       "${CURRENT_LATENCY:-0}"
 	json_add_string initial_default_node  "${INITIAL_DEFAULT_NODE:-}"
 	json_add_string initial_default_label "$(node_label "$INITIAL_DEFAULT_NODE")"

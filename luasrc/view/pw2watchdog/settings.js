@@ -183,6 +183,19 @@ return view.extend({
 			uci.add('pw2watchdog', 'config', 'advanced');
 		}
 
+		/* Initialize scoring section (advisory by default) */
+		if (!uci.get('pw2watchdog', 'scoring')) {
+			uci.add('pw2watchdog', 'config', 'scoring');
+			uci.set('pw2watchdog', 'scoring', 'enabled',       '1');
+			uci.set('pw2watchdog', 'scoring', 'advisory_mode', '1');
+		}
+
+		/* Initialize connectivity section (real 204 probe) */
+		if (!uci.get('pw2watchdog', 'connectivity')) {
+			uci.add('pw2watchdog', 'config', 'connectivity');
+			uci.set('pw2watchdog', 'connectivity', 'enabled',  '1');
+		}
+
 		var m = new form.Map('pw2watchdog',
 			_('PassWall2 Watchdog'),
 			_('Main watchdog configuration.')
@@ -476,6 +489,43 @@ return view.extend({
 			'To find your range: run <code>curl https://ipinfo.io/&lt;your-ip&gt;</code> and look at the <em>org</em> / <em>prefix</em> field.'
 		);
 		o.depends('proxy_check_enabled', '1');
+
+		/* ── Health & Scoring ───────────────────────────────────────── */
+		var health = m.section(form.NamedSection, 'scoring', 'config',
+			_('Health & Scoring'),
+			_('Probabilistic decision engine and real-traffic check. ' +
+			  'In advisory mode the engine only logs recommendations — it never overrides the classic watchdog logic.')
+		);
+
+		o = health.option(form.Flag, 'enabled', _('Enable scoring (decision log)'));
+		o.description = _('Compute a per-iteration score from all signals (latency, proxy match, real 204, history) and log decisions to <code>/var/run/pw2watchdog/decisions.jsonl</code>. View stats: <code>pw2watchdog stats</code>.');
+		o.default = '1';
+
+		o = health.option(form.Flag, 'advisory_mode', _('Advisory mode (recommended)'));
+		o.description = _('Scoring only logs recommendations — actual switching is done by the classic watchdog. Turn off only when you trust the score sufficiently after observing stats.');
+		o.default = '1';
+		o.depends('enabled', '1');
+
+		/* ── Real connectivity check (204 via SOCKS) ─────────────────── */
+		var conn = m.section(form.NamedSection, 'connectivity', 'config',
+			_('Live connectivity check'),
+			_('Verifies that real traffic flows through the proxy by fetching <code>/generate_204</code> via the PassWall2 SOCKS port. Adds a Live test row in Overview.')
+		);
+
+		o = conn.option(form.Flag, 'enabled', _('Enable live 204 probe'));
+		o.description = _('Run <code>curl --socks5-hostname 127.0.0.1:&lt;node_socks_port&gt; https://www.google.com/generate_204</code> each iteration. SOCKS port is auto-detected from PassWall2.');
+		o.default = '1';
+
+		o = conn.option(form.Value, 'test_url', _('Test URL (advanced)'));
+		o.placeholder = 'https://www.google.com/generate_204';
+		o.description = _('Override the 204 endpoint. Leave empty to use Google. Must return HTTP 204 on success.');
+		o.depends('enabled', '1');
+
+		o = conn.option(form.Value, 'socks_port_manual', _('SOCKS port override (advanced)'));
+		o.placeholder = 'auto';
+		o.datatype = 'or("",port)';
+		o.description = _('Override PassWall2 SOCKS port auto-detection. Leave empty to read from UCI <code>passwall2.@global[0].node_socks_port</code>.');
+		o.depends('enabled', '1');
 
 		/* --- Actions --- */
 		var actions = m.section(form.NamedSection, '__actions__', 'dummy');
