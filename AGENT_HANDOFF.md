@@ -313,8 +313,18 @@ Auto-detect direct IP — кнопка: стоп passwall2 → curl → стар
 2. **WAN IP auto-detect** (новый модуль либо в демоне):
    - При старте демона, если xray ещё не поднялся → curl на ipify+ifconfig.me+2ip.io (majority из трёх) → это WAN IP.
    - Сохранить в `/var/run/pw2watchdog/detected_wan_ip` (обновляется при каждом reboot).
-   - **Явная кнопка** “Detect my ISP IP” в Health/Advanced: stop PW2 → curl → start PW2 → записать IP/32 в `DIRECT_IP_RANGES`.
+   - **Явная кнопка** “Detect my ISP IP” в Health/Advanced: stop PW2 → curl → start PW2 → записать в `DIRECT_IP_RANGES` (см. п.2a про выбор маски).
    - **Nag-alert** в Health UI: если `DIRECT_IP_RANGES` пусто и detected_wan_ip есть → показать info-banner “Detected your ISP IP: X.X.X.X — [Add to ranges]”.
+
+   **2a. Выбор маски и dynamic-IP problem (КРИТИЧНО):**
+   Большинство роутеров сидят на динамических ISP-адресах → /32 вчера не совпадёт с /32 сегодня. Нужно:
+   - **Дефолт для Add-to-ranges = /24** (покрывает большинство ISP-ротаций). /32 — только как опция в advanced.
+   - **UX-валидация в поле**: если юзер вводит голый IP без `/N` (напр. `91.236.238.36`) — принимать как `IP/32` без ошибки (тихая нормализация на сервере + подсказка в UI “будет завёрнуто в /32, используйте /24 для динамических IP”).
+   - **Определить /24 из одного измерения нельзя** с уверенностью (мы видели только один IP). Автовывод:
+     - 1-е измерение: предложить `/24` как разумный дефолт с ясным объяснением.
+     - Добавить **history наблюдаемых WAN IP** (`/var/run/pw2watchdog/wan_ip_history.jsonl`) — пишется при каждой удачной автодетекции.
+     - При накоплении ≥3 разных IP — вычислять общую supernet (самую узкую маску покрывающую все IP). Показывать нюжеру "Наблюдаем ваш ISP выдаёт IP из диапазона X.X.X.0/22 — [Apply]". Это решает dynamic-IP problem без навязчивых вопросов.
+   - **Backlog idea**: использовать внешние whois/rdap (https://rdap.arin.net/registry/ip/X.X.X.X) для получения фактического ISP-CIDR — но это внешний запрос и может быть расценен как privacy leak. Обсудить отдельно.
 
 3. **Effective direct ranges в демоне:**
    ```
