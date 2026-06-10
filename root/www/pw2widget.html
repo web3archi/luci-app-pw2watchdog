@@ -179,6 +179,13 @@
 		return new Date(t * 1000).toLocaleString();
 	}
 
+	function pickPwState(s) {
+		var r = s.passwall_running || '';
+		if (r === 'true')  return ['Running', 'ok'];
+		if (r === 'false') return ['Stopped', 'danger'];
+		return ['Unknown', 'neutral'];
+	}
+
 	function pickState(s) {
 		var en   = s.proxy_check_enabled || '0';
 		var st   = s.proxy_check_state   || '';
@@ -193,10 +200,10 @@
 		if (en !== '1')                                                  return ['Check disabled',           'neutral'];
 		if (!pw)                                                         return ['No node configured',       'neutral'];
 		if (st === 'blackhole')                                          return ['Blocked (emergency)',      'danger'];
-		if (st === 'proxy_no_204')                                       return ['Connection broken',        'danger'];
+		if (st === 'proxy_no_204')                                       return ['Traffic not flowing',      'danger'];
 		if (st === 'direct')                                             return ['Traffic leak',             'danger'];
 		if (st === 'no_response')                                        return ['No response (will retry)', 'warn'];
-		if (st === 'proxy_ok' && ip && !node)                            return ['Working (non-standard exit)', 'warn'];
+		if (st === 'proxy_ok' && ip && !node)                            return ['Working (unrecognised exit)', 'warn'];
 		if (st === 'proxy_ok')                                           return ['Working',                  'ok'];
 		if (last > 0 && (now - last) < 90)                               return ['Checking…',                'warn'];
 		if (!st || st === 'unknown')                                     return ['Pending check…',           'neutral'];
@@ -210,25 +217,40 @@
 		var prev = root.querySelector('details');
 		if (prev) prevDetailsOpen = prev.open;
 
-		var st = pickState(s);
+		var pwSt   = pickPwState(s);
+		var st     = pickState(s);
 		var pwLabel = s.passwall_default_label || s.current_label || s.passwall_default_node || '-';
 		var rxIp    = s.proxy_check_ip || '';
 		var rxNode  = s.proxy_check_node_label || '';
 		var lastSw  = fmtTs(s.last_switch);
+		var lastTgt = s.last_target_label || s.last_target || '';
 		var lastRs  = s.last_reason || '-';
+		var hDrops  = Number(s.health_drops          || 0);
+		var hDropTs = Number(s.health_last_drop_ts   || 0);
+		var hLeaks  = Number(s.health_leaks          || 0);
+		var hLeakTs = Number(s.health_last_leak_ts   || 0);
 
 		var rows = [];
 
+		// Row 1: PassWall2 — intent from UCI
+		rows.push(el('tr', null, [
+			el('td', { 'class': 'lbl' }, 'PassWall2'),
+			el('td', { 'class': 'val' }, el('span', { 'class': 'badge ' + pwSt[1] }, pwSt[0]))
+		]));
+
+		// Row 2: Watchdog — observed reality
+		rows.push(el('tr', null, [
+			el('td', { 'class': 'lbl' }, 'Watchdog'),
+			el('td', { 'class': 'val' }, el('span', { 'class': 'badge ' + st[1] }, st[0]))
+		]));
+
+		// Row 3: Current node
 		rows.push(el('tr', null, [
 			el('td', { 'class': 'lbl' }, 'Current node'),
 			el('td', { 'class': 'val' }, pwLabel)
 		]));
 
-		rows.push(el('tr', null, [
-			el('td', { 'class': 'lbl' }, 'State'),
-			el('td', { 'class': 'val' }, el('span', { 'class': 'badge ' + st[1] }, st[0]))
-		]));
-
+		// Row 4: Real exit
 		if (s.proxy_check_enabled === '1') {
 			var rxVal;
 			if (rxIp) {
@@ -246,11 +268,55 @@
 			]));
 		}
 
+		// Row 5: Last node switch — target label + timestamp
+		var lsVal;
+		if (Number(s.last_switch || 0) > 0) {
+			if (lastTgt) {
+				lsVal = el('span', null, [ lastTgt, ' — ', el('code', null, lastSw) ]);
+			} else {
+				lsVal = el('code', null, lastSw);
+			}
+		} else {
+			lsVal = el('em', null, 'never');
+		}
 		rows.push(el('tr', null, [
 			el('td', { 'class': 'lbl' }, 'Last node switch'),
-			el('td', { 'class': 'val' }, lastSw)
+			el('td', { 'class': 'val' }, lsVal)
 		]));
 
+		// Row 6: Connection drops (persistent counter)
+		var dropsVal;
+		if (hDrops > 0 && hDropTs > 0) {
+			dropsVal = el('span', null, [
+				el('b', null, String(hDrops)),
+				' ' + (hDrops === 1 ? 'time' : 'times') + ' — last ',
+				el('code', null, fmtTs(hDropTs))
+			]);
+		} else {
+			dropsVal = '0';
+		}
+		rows.push(el('tr', null, [
+			el('td', { 'class': 'lbl' }, 'Connection drops'),
+			el('td', { 'class': 'val' }, dropsVal)
+		]));
+
+		// Row 7: Direct leaks (persistent counter)
+		var leaksVal;
+		if (hLeaks > 0 && hLeakTs > 0) {
+			leaksVal = el('span', null, [
+				el('b', null, String(hLeaks)),
+				' ' + (hLeaks === 1 ? 'time' : 'times') + ' — last ',
+				el('code', null, fmtTs(hLeakTs))
+			]);
+		} else {
+			leaksVal = '0';
+		}
+		rows.push(el('tr', null, [
+			el('td', { 'class': 'lbl' }, 'Direct leaks'),
+			el('td', { 'class': 'val' }, leaksVal)
+		]));
+
+		// Row 8: Last switch reason (kept for context)
 		rows.push(el('tr', null, [
 			el('td', { 'class': 'lbl' }, 'Last switch reason'),
 			el('td', { 'class': 'val' }, lastRs)
