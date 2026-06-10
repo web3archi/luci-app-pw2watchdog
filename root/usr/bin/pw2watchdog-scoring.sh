@@ -104,25 +104,37 @@ pw2_scoring_load_uci() {
 # All return empty string on failure (never crash).
 # ---------------------------------------------------------------------------
 
+# Strip leading/trailing whitespace and CR (defensive: some jsonfilter builds
+# emit trailing CR on certain platforms; comparisons would silently fail).
+_pw2_trim() {
+	# shellcheck disable=SC3060   # POSIX ${var##/%%} suffices, no bash subst
+	printf '%s' "$1" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
 # Get a field for a node from latency_cache.json
 # Usage: pw2_lc_get <node_id> <field>     # field: latency|status|label|ts
 pw2_lc_get() {
-	local node="$1" field="$2"
+	local node="$1" field="$2" raw
 	[ -f "$LATENCY_CACHE" ] || return 0
-	jsonfilter -i "$LATENCY_CACHE" -e "@['$node'].$field" 2>/dev/null
+	raw="$(jsonfilter -i "$LATENCY_CACHE" -e "@['$node'].$field" 2>/dev/null)"
+	_pw2_trim "$raw"
 }
 
-# List all node IDs in latency_cache.json
+# List all node IDs in latency_cache.json.
+# jsonfilter on OpenWrt 23.05 does not support key extraction (@.*~ errors).
+# Use awk over the canonical formatting written by pw2watchdog-scanner.sh:
+#   '  "<node_id>": { ...'
 pw2_lc_list_nodes() {
 	[ -f "$LATENCY_CACHE" ] || return 0
-	jsonfilter -i "$LATENCY_CACHE" -e '@.*~' 2>/dev/null
+	awk -F'"' '/^  "[A-Za-z0-9_-]+":[[:space:]]*\{/ { print $2 }' "$LATENCY_CACHE"
 }
 
 # Get a top-level field from status.json
 pw2_st_get() {
-	local field="$1"
+	local field="$1" raw
 	[ -f "$STATUS_FILE" ] || return 0
-	jsonfilter -i "$STATUS_FILE" -e "@.$field" 2>/dev/null
+	raw="$(jsonfilter -i "$STATUS_FILE" -e "@.$field" 2>/dev/null)"
+	_pw2_trim "$raw"
 }
 
 # ---------------------------------------------------------------------------
@@ -292,6 +304,9 @@ pw2_scoring_main() {
 		score_all)
 			pw2_compute_score_all_json
 			;;
+		list_nodes)
+			pw2_lc_list_nodes
+			;;
 		dump_uci)
 			printf 'weights:    latency=%d proxy=%d stability=%d age=%d iface=%d\n' \
 				"$SC_W_LAT" "$SC_W_PROXY" "$SC_W_STAB" "$SC_W_AGE" "$SC_W_IFACE"
@@ -331,6 +346,7 @@ pw2watchdog-scoring.sh — health scoring engine
 Usage:
   $0 score <node_id>     compute score for one node (JSON)
   $0 score_all           compute scores for all nodes (JSON)
+  $0 list_nodes          list node IDs from latency_cache
   $0 dump_uci            print effective weights / thresholds
   $0 selftest            wiring smoke test against live state files
 
