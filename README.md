@@ -333,6 +333,32 @@ After a node switch, PassWall2 restarts briefly. During that restart window — 
 - **Interval minimum** — cannot be set below 60 seconds.
 - **Direct ranges optional** — if left empty, direct detection is disabled. The monitor will still identify proxy nodes by address and show their label/flag.
 
+### Event history (proxy_check)
+
+Every state transition produced by the monitor is recorded in `/var/run/pw2watchdog/history.jsonl` as a JSON line with `action="proxy_check"`. The Overview history table shows it as **Proxy connection check**.
+
+Fields in addition to the standard history schema (`ts`, `action`, `node`, `label`, `reason`):
+
+| Field | Meaning |
+|---|---|
+| `state` | `proxy_ok` \| `direct` \| `blackhole` — same values used in `status.json` |
+| `ip` | External IP returned by the check URL (empty for `blackhole` / no-response) |
+| `node_label` | PassWall2 node label whose `.address` matched `ip` (empty when no match) |
+
+**Anti-flood rules** — a `proxy_check` event is appended only when:
+
+1. it is the first successful check after watchdog start, or
+2. the resulting `state` is different from the previously recorded one, or
+3. `state` is the same but the external `ip` changed (provider-side rotation).
+
+The `node` field of a `proxy_check` row is **the current PassWall2 default node at the moment of the check**, not the node matched by exit IP. Use `node_label` (extended field) to see which node— if any — the exit IP actually belongs to. This distinction matters when monitor and current node disagree (see *Monitor vs Current node* above).
+
+Example line:
+
+```json
+{"ts":1717920000,"action":"proxy_check","node":"cfg0123abc","label":"AEZA-DE","reason":"proxy_ok ext_ip=185.x.x.x node='AEZA-DE'","state":"proxy_ok","ip":"185.x.x.x","node_label":"AEZA-DE"}
+```
+
 ## Known limitations and notes
 
 - **Candidate count** — the recommended maximum is calculated automatically from `check_interval`, `timeout`, and measured per-node scan overhead on your specific device. It is shown in Overview under **Device performance** (Weak / Medium / Powerful tier). More candidates than recommended means the scanner may not finish within one interval, causing stale latency data. The Overview page warns if you exceed the recommended count. On weak hardware with default settings the typical maximum is 3.

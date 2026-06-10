@@ -245,6 +245,7 @@ function describeAction(action) {
 	case 'fallback_direct':    return _('Fallback to Direct');
 	case 'fallback_blackhole': return _('Fallback to Blackhole');
 	case 'rotate_all':         return _('Rotate All Nodes');
+	case 'proxy_check':        return _('Proxy connection check');
 	default:                   return action || '-';
 	}
 }

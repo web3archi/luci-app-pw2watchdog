@@ -119,7 +119,8 @@ return view.extend({
 					  'Current node is an instruction (what the watchdog wrote to UCI). ' +
 					  'The monitor is a measurement (real HTTP request through live traffic). ' +
 					  'If they differ, trust the monitor — it reflects what your traffic is actually using right now.'),
-					_('Shunt / split-routing caveat: if the IP-echo URL is routed directly by your shunt or routing rules, the check will always show Direct even when the proxy is working. Use a URL that is proxied in your setup.')
+					_('Shunt / split-routing caveat: if the IP-echo URL is routed directly by your shunt or routing rules, the check will always show Direct even when the proxy is working. Use a URL that is proxied in your setup.'),
+					_('History: every change of proxy_check state or exit IP is recorded in the event history (action "Proxy connection check") with state, IP and matched node label. Repeated identical checks are not logged to avoid flooding.')
 				]),
 
 				renderNote(_('Limitations'), [

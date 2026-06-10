@@ -134,6 +134,76 @@ append_history() {
 }
 
 # ---------------------------------------------------------------------------
+# Proxy-check history event (extended schema)
+#
+# Writes a JSON line with the same base fields as append_history
+# (ts, action, node, label, reason) plus proxy-check specific fields:
+#   state      — proxy_ok | direct | blackhole | no_response | bad_response
+#   ip         — external IP returned by the check URL (may be empty)
+#   node_label — PassWall2 node label whose .address matches ext_ip (may be empty)
+#
+# overview.js currently parses history via JSON.parse() and only reads the
+# base fields, so the extra keys are forward-compatible.
+# ---------------------------------------------------------------------------
+append_proxy_check_history() {
+	local ts="$1" current_node="$2" state="$3" ip="$4" node_label="$5" reason="$6"
+	[ -n "$ts" ]     || ts="$(date +%s)"
+	[ -n "$current_node" ] || current_node="-"
+	[ -n "$reason" ] || reason="-"
+	local label
+	label="$(node_label "$current_node")"
+
+	mkdir -p "$STATE_DIR"
+	json_init
+	json_add_int    ts         "$ts"
+	json_add_string action     "proxy_check"
+	json_add_string node       "$current_node"
+	json_add_string label      "$label"
+	json_add_string reason     "$reason"
+	json_add_string state      "$state"
+	json_add_string ip         "$ip"
+	json_add_string node_label "$node_label"
+	json_dump >> "$HISTORY_FILE"
+	printf '\n' >> "$HISTORY_FILE"
+
+	[ -f "$HISTORY_FILE" ] && \
+		tail -n 200 "$HISTORY_FILE" > "${HISTORY_FILE}.tmp" 2>/dev/null && \
+		mv "${HISTORY_FILE}.tmp" "$HISTORY_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# Record a proxy-check event only when something meaningful changed.
+#
+# Trigger rules (anti-flood — proxy_check runs every PROXY_CHECK_INTERVAL):
+#   1. First successful proxy_check after watchdog start
+#      (LAST_PROXY_CHECK_STATE_REC is empty).
+#   2. State changed against the previously recorded one.
+#   3. State is the same but external IP changed (e.g. node-side rotation).
+#
+# Updates LAST_PROXY_CHECK_STATE_REC / LAST_PROXY_CHECK_IP_REC in memory;
+# save_state() will persist them on the next normal save.
+# ---------------------------------------------------------------------------
+_record_proxy_check_event() {
+	local state="$1" ip="$2" node_label="$3" reason="$4"
+	[ -n "$state" ] || return 0
+
+	if [ "$state" = "${LAST_PROXY_CHECK_STATE_REC:-}" ] \
+		&& [ "$ip" = "${LAST_PROXY_CHECK_IP_REC:-}" ]; then
+		return 0
+	fi
+
+	local current_node
+	current_node="$(get_default_node 2>/dev/null)"
+	[ -n "$current_node" ] || current_node="-"
+
+	append_proxy_check_history "${LAST_PROXY_CHECK_TS:-$(date +%s)}" \
+		"$current_node" "$state" "$ip" "$node_label" "$reason"
+
+	LAST_PROXY_CHECK_STATE_REC="$state"
+	LAST_PROXY_CHECK_IP_REC="$ip"
+}
+
+# ---------------------------------------------------------------------------
 # Node label
 # ---------------------------------------------------------------------------
 node_label() {
@@ -218,6 +288,8 @@ load_state() {
 	ROTATE_OFFSET=0       # current position in the circular node buffer (advances by 1 per cycle)
 	LAST_PW2_RESTART=0   # unix timestamp of last PassWall2 restart triggered by watchdog
 	LAST_PROXY_CHECK_TS=0  # unix timestamp of last proxy connection check
+	LAST_PROXY_CHECK_STATE_REC=""   # last proxy_check state actually written to history
+	LAST_PROXY_CHECK_IP_REC=""      # last proxy_check ext_ip actually written to history
 	[ -f "$STATE_FILE" ] && . "$STATE_FILE"
 }
 
@@ -245,6 +317,8 @@ ROTATE_OFFSET=${ROTATE_OFFSET:-0}
 LAST_SCAN_TS=${LAST_SCAN_TS:-0}
 LAST_PW2_RESTART=${LAST_PW2_RESTART:-0}
 LAST_PROXY_CHECK_TS=${LAST_PROXY_CHECK_TS:-0}
+LAST_PROXY_CHECK_STATE_REC='${LAST_PROXY_CHECK_STATE_REC:-}'
+LAST_PROXY_CHECK_IP_REC='${LAST_PROXY_CHECK_IP_REC:-}'
 EOFSTATE
 }
 
@@ -1149,12 +1223,19 @@ _check_proxy_connection() {
 		return 0
 	fi
 
+	# Reason string carries enough context for the history record; the log line
+	# uses the same text after "proxy_check: ".
+	local pc_reason=""
+
 	# Blackhole active — no HTTP check needed
 	if [ -n "${STATIC_BH_HANDLE:-}" ]; then
 		PROXY_CHECK_STATE="blackhole"
 		PROXY_CHECK_IP=""
+		PROXY_CHECK_NODE_LABEL=""
 		LAST_PROXY_CHECK_TS="$(date +%s)"
-		log "proxy_check: blackhole active (nft DROP handle=${STATIC_BH_HANDLE})"
+		pc_reason="blackhole active (nft DROP handle=${STATIC_BH_HANDLE})"
+		log "proxy_check: ${pc_reason}"
+		_record_proxy_check_event "$PROXY_CHECK_STATE" "" "" "$pc_reason"
 		return 0
 	fi
 
@@ -1167,6 +1248,7 @@ _check_proxy_connection() {
 		local age=$(( now - LAST_PROXY_CHECK_TS ))
 		if [ "$age" -lt "$interval" ]; then
 			log "proxy_check: skipping (last check ${age}s ago, interval=${interval}s)"
+			# Not a state event — don't record to history.
 			return 0
 		fi
 	fi
@@ -1185,10 +1267,15 @@ _check_proxy_connection() {
 	# Validate: must look like an IP address
 	case "$ext_ip" in
 	*[!0-9.:]*)
-		# Non-IP response or empty — treat as unreachable
+		# Non-IP response or empty — treat as bad response (not a real direct).
+		# Keep STATE=direct for backward-compat with status.json consumers,
+		# but record a distinct reason so history is unambiguous.
 		PROXY_CHECK_STATE="direct"
 		PROXY_CHECK_IP=""
+		PROXY_CHECK_NODE_LABEL=""
+		pc_reason="bad_response from ${check_url}: '${ext_ip}'"
 		log "proxy_check: unexpected response from $check_url: '$ext_ip'"
+		_record_proxy_check_event "$PROXY_CHECK_STATE" "" "" "$pc_reason"
 		return 0
 		;;
 	esac
@@ -1196,7 +1283,10 @@ _check_proxy_connection() {
 	if [ -z "$ext_ip" ]; then
 		PROXY_CHECK_STATE="direct"
 		PROXY_CHECK_IP=""
+		PROXY_CHECK_NODE_LABEL=""
+		pc_reason="no_response from ${check_url} (curl failed or timed out)"
 		log "proxy_check: no response from $check_url (curl failed or timed out)"
+		_record_proxy_check_event "$PROXY_CHECK_STATE" "" "" "$pc_reason"
 		return 0
 	fi
 
@@ -1232,7 +1322,8 @@ _check_proxy_connection() {
 	# 3. Else proxy_ok (unknown node — still proxied, just unrecognised)
 	if [ -n "$PROXY_CHECK_NODE_LABEL" ]; then
 		PROXY_CHECK_STATE="proxy_ok"
-		log "proxy_check: proxy_ok — ext_ip=$ext_ip node='$PROXY_CHECK_NODE_LABEL'"
+		pc_reason="proxy_ok ext_ip=${ext_ip} node='${PROXY_CHECK_NODE_LABEL}'"
+		log "proxy_check: ${pc_reason}"
 	elif [ -n "${DIRECT_IP_RANGES:-}" ]; then
 		local cidr matched=""
 		for cidr in $DIRECT_IP_RANGES; do
@@ -1243,15 +1334,21 @@ _check_proxy_connection() {
 		done
 		if [ -n "$matched" ]; then
 			PROXY_CHECK_STATE="direct"
-			log "proxy_check: direct — ext_ip=$ext_ip matches direct range $matched"
+			pc_reason="direct ext_ip=${ext_ip} matches direct range ${matched}"
+			log "proxy_check: ${pc_reason}"
 		else
 			PROXY_CHECK_STATE="proxy_ok"
-			log "proxy_check: proxy_ok — ext_ip=$ext_ip (no node match, not in direct ranges)"
+			pc_reason="proxy_ok ext_ip=${ext_ip} (no node match, not in direct ranges)"
+			log "proxy_check: ${pc_reason}"
 		fi
 	else
 		PROXY_CHECK_STATE="proxy_ok"
-		log "proxy_check: proxy_ok — ext_ip=$ext_ip (no node match, no direct ranges configured)"
+		pc_reason="proxy_ok ext_ip=${ext_ip} (no node match, no direct ranges configured)"
+		log "proxy_check: ${pc_reason}"
 	fi
+
+	_record_proxy_check_event "$PROXY_CHECK_STATE" "$PROXY_CHECK_IP" \
+		"$PROXY_CHECK_NODE_LABEL" "$pc_reason"
 }
 
 daemon_loop() {
