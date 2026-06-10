@@ -298,6 +298,44 @@ Auto-detect direct IP — кнопка: стоп passwall2 → curl → стар
 **[П15] Overview Device performance блок**
 Показывать только в manual режиме.
 
+**[П16] Health UI Redesign + WAN IP auto-detect (HIGH PRIORITY — завтра)**
+Обсуждено 11 июня 2026 ~01:00 MSK, остановились по времени. Объём ~1.5-2 ч чистого:
+
+1. **Health UI рестайл** (overview.js + pw2widget.html):
+   - Убрать строку “Default node” (дубль с Overview, бесполезно).
+   - **Две отдельные строки** вместо одной:
+     - `PassWall2: Running / Stopped`
+     - `Watchdog:  Working / Traffic not flowing / Check disabled / ...`
+   - Ниже: Current node, Real exit, Last node switch (с временем "X min ago").
+   - Counters: Connection drops (count + last_ts), Direct leaks (count + last_ts).
+   - Счётчики показываем всегда (0 = информативно, ”всё чисто”).
+
+2. **WAN IP auto-detect** (новый модуль либо в демоне):
+   - При старте демона, если xray ещё не поднялся → curl на ipify+ifconfig.me+2ip.io (majority из трёх) → это WAN IP.
+   - Сохранить в `/var/run/pw2watchdog/detected_wan_ip` (обновляется при каждом reboot).
+   - **Явная кнопка** “Detect my ISP IP” в Health/Advanced: stop PW2 → curl → start PW2 → записать IP/32 в `DIRECT_IP_RANGES`.
+   - **Nag-alert** в Health UI: если `DIRECT_IP_RANGES` пусто и detected_wan_ip есть → показать info-banner “Detected your ISP IP: X.X.X.X — [Add to ranges]”.
+
+3. **Effective direct ranges в демоне:**
+   ```
+   effective = DIRECT_IP_RANGES (if non-empty) else detected_wan_ip/32 (if exists) else ""
+   ```
+   Приоритет явного ввода юзера над автодетектом.
+
+4. **health_counters.json** в `/var/run/pw2watchdog/`:
+   ```json
+   {"drops":3,"last_drop_ts":..., "leaks":1,"last_leak_ts":...}
+   ```
+   Инкремент в демоне при переходе proxy_check_state proxy_ok → не-proxy_ok (drop) и любое → direct (leak).
+
+5. **Отдельный баг** (выявлен 11.06.2026): после reboot роутера Health UI показывает “Proxy engine not running” ещё 5+ минут после того как PW2 реально поднялся. Причина: демон пишет status.json один раз в CHECK_INTERVAL (180s). Исправить: отдельный быстрый луп “health refresh” каждые 10–15с — только обновляет passwall_alive + proxy_check_state, без сканирования нод.
+
+6. **Семантика иконок:** эмодзи в плашках только как визуальные сигналы состояния, их кодируем в JS маппинге, не в демоне.
+
+**Принцип**: PW2 первичен, Watchdog аддон. Разводим эти сущности по UI.
+
+**Актуальный commit на паузе**: `e39bb99` (Commit 6: passwall_alive). Роутер работает, тест пройден, status.json зелёный.
+
 ---
 
 ## Что НЕ делаем
