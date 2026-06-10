@@ -382,8 +382,10 @@ _append_decisions_line() {
 	json_add_string scoring_verdict     "$SCORING_VERDICT"
 	json_add_int    agrees              "${SCORING_AGREES:-0}"
 	json_add_string advisory_mode       "${SCORING_ADVISORY:-1}"
+	# json_dump returns a single line with trailing newline — do NOT add extra \n.
+	# But the produced JSON has spaces around keys (pretty-ish); that's fine
+	# for jsonfilter consumers and for human inspection.
 	json_dump >> "$DECISIONS_FILE"
-	printf '\n' >> "$DECISIONS_FILE"
 	_scoring_rotate "$DECISIONS_FILE" $((max_mb * 1024 * 1024))
 }
 
@@ -1565,51 +1567,58 @@ cmd_stats() {
 	echo "=== scoring telemetry stats ==="
 	echo
 
-	if [ ! -f "$DECISIONS_FILE" ]; then
+	if [ ! -f "$DECISIONS_FILE" ] || [ ! -s "$DECISIONS_FILE" ]; then
 		echo "no decisions.jsonl yet (need scoring.enabled=1 and at least one run)"
 		return 0
 	fi
 
+	# Count only non-empty lines (legacy data may contain blank separators)
 	local total agreed disagreed
-	total="$(wc -l < "$DECISIONS_FILE" 2>/dev/null)"
-	agreed="$(grep -c '"agrees":1' "$DECISIONS_FILE" 2>/dev/null)"
+	total="$(grep -c '^[[:space:]]*{' "$DECISIONS_FILE" 2>/dev/null)"
+	agreed="$(grep -c '"agrees": *1' "$DECISIONS_FILE" 2>/dev/null)"
 	disagreed=$((total - agreed))
 	echo "decisions.jsonl: $total cycles total, agreed=$agreed disagreed=$disagreed"
-	echo "  agreement rate: $((agreed * 100 / (total > 0 ? total : 1)))%"
+	if [ "$total" -gt 0 ]; then
+		echo "  agreement rate: $((agreed * 100 / total))%"
+	fi
 	echo
 
 	echo "=== verdict distribution ==="
 	for v in stay prefer_switch force_switch unavailable; do
 		local n
-		n="$(grep -c "\"scoring_verdict\":\"$v\"" "$DECISIONS_FILE" 2>/dev/null)"
+		n="$(grep -c "\"scoring_verdict\": *\"$v\"" "$DECISIONS_FILE" 2>/dev/null)"
 		printf '  %-15s %d\n' "$v" "$n"
 	done
 	echo
 
 	echo "=== last $limit decisions (oldest → newest) ==="
-	echo "ts          current   cur_total  best_node  best_total  verdict          legacy  agrees"
-	tail -n "$limit" "$DECISIONS_FILE" | awk '
-	{
-		ts="-"; cur="-"; ct=0; bn="-"; bt=0; v="-"; la="-"; ag="-"
-		if (match($0, /"ts":[0-9]+/))                 { ts=substr($0,RSTART+5,RLENGTH-5) }
-		if (match($0, /"current":"[^"]*"/))           { cur=substr($0,RSTART+11,RLENGTH-12) }
-		if (match($0, /"current_total":[0-9]+/))      { ct=substr($0,RSTART+16,RLENGTH-16) }
-		if (match($0, /"scoring_best_node":"[^"]*"/)) { bn=substr($0,RSTART+21,RLENGTH-22) }
-		if (match($0, /"scoring_best_total":[0-9]+/)) { bt=substr($0,RSTART+21,RLENGTH-21) }
-		if (match($0, /"scoring_verdict":"[^"]*"/))   { v=substr($0,RSTART+19,RLENGTH-20) }
-		if (match($0, /"legacy_action":"[^"]*"/))     { la=substr($0,RSTART+17,RLENGTH-18) }
-		if (match($0, /"agrees":[0-9]/))              { ag=substr($0,RSTART+9,1) }
-		printf "%-11s %-9s %-10s %-10s %-11s %-16s %-7s %s\n", \
-			ts, cur, ct, bn, bt, v, la, ag
-	}
-	'
+	printf '%-11s %-9s %-9s %-9s %-9s %-15s %-7s %s\n' \
+		ts current cur_tot best_node best_tot verdict legacy agrees
+
+	# Read only non-empty lines, parse with jsonfilter (robust against
+	# pretty-printed JSON, key spacing, blank lines).
+	grep '^[[:space:]]*{' "$DECISIONS_FILE" | tail -n "$limit" | while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		local ts cur ct bn bt v la ag
+		ts="$(printf '%s' "$line"  | jsonfilter -e '@.ts'                 2>/dev/null)"
+		cur="$(printf '%s' "$line" | jsonfilter -e '@.current'            2>/dev/null)"
+		ct="$(printf '%s' "$line"  | jsonfilter -e '@.current_total'      2>/dev/null)"
+		bn="$(printf '%s' "$line"  | jsonfilter -e '@.scoring_best_node'  2>/dev/null)"
+		bt="$(printf '%s' "$line"  | jsonfilter -e '@.scoring_best_total' 2>/dev/null)"
+		v="$(printf '%s' "$line"   | jsonfilter -e '@.scoring_verdict'    2>/dev/null)"
+		la="$(printf '%s' "$line"  | jsonfilter -e '@.legacy_action'      2>/dev/null)"
+		ag="$(printf '%s' "$line"  | jsonfilter -e '@.agrees'             2>/dev/null)"
+		printf '%-11s %-9s %-9s %-9s %-9s %-15s %-7s %s\n' \
+			"${ts:--}" "${cur:--}" "${ct:-0}" "${bn:--}" "${bt:-0}" \
+			"${v:--}" "${la:--}" "${ag:--}"
+	done
 	echo
 
 	if [ -f "$SCORES_FILE" ]; then
 		local scores_lines scores_size
-		scores_lines="$(wc -l < "$SCORES_FILE" 2>/dev/null)"
+		scores_lines="$(grep -c '^[[:space:]]*{' "$SCORES_FILE" 2>/dev/null)"
 		scores_size="$(wc -c < "$SCORES_FILE" 2>/dev/null)"
-		echo "scores.jsonl: $scores_lines lines, $scores_size bytes"
+		echo "scores.jsonl: $scores_lines records, $scores_size bytes"
 	fi
 }
 
