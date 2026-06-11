@@ -188,6 +188,11 @@
 
 	function pickWdState(s) {
 		if (s.running === 'true') return ['\u{1F7E2} Running', 'ok'];
+		var lastScan = Number(s.last_scan_ts || 0);
+		var nowSec   = Math.floor(Date.now() / 1000);
+		if (lastScan > 0 && (nowSec - lastScan) < 300) {
+			return ['\u{1F7E1} Starting…', 'warn'];
+		}
 		return ['\u{1F534} Stopped', 'danger'];
 	}
 

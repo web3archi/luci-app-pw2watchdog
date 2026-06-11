@@ -403,11 +403,18 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 		pwHuman = _('Unknown');                          pwAlertClass = 'alert-message';
 	}
 
-	/* Row 2: Watchdog — is the daemon itself running? */
+	/* Row 2: Watchdog — is the daemon itself running?
+	 * Running:  status.running === 'true' (daemon in main loop)
+	 * Starting: status.running !== 'true' AND last_scan_ts is fresh (≤300s) —
+	 *           daemon is alive and writing status, just hasn't flipped the flag yet.
+	 * Stopped:  otherwise. */
 	var wdRunning = status.running || 'false';
+	var lastScanTs = Number(status.last_scan_ts || 0);
 	var wdHuman, wdAlertClass;
 	if (wdRunning === 'true') {
 		wdHuman = '\u{1F7E2} ' + _('Running');           wdAlertClass = 'alert-message success';
+	} else if (lastScanTs > 0 && (nowSec - lastScanTs) < 300) {
+		wdHuman = '\u{1F7E1} ' + _('Starting…');         wdAlertClass = 'alert-message warning';
 	} else {
 		wdHuman = '\u{1F534} ' + _('Stopped');           wdAlertClass = 'alert-message danger';
 	}

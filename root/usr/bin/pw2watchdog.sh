@@ -645,72 +645,41 @@ EOFSTATE
 # Status for UI
 # ---------------------------------------------------------------------------
 write_status() {
+	# ----- C8 hardening: ALL subshells/UCI lookups BEFORE json_init -----
+	# Background: busybox ash silently aborts the rest of the function when
+	# certain subshell patterns interact with the json_init/json_add_* state.
+	# Symptom: status.json contained ONLY the tail block (health_counters and
+	# proxy_check) because write_status died early and json_init implicitly
+	# restarted later in the health-counter block.
+	# Fix: compute everything that needs $(...) or uci first, into plain vars,
+	# then call ONLY pure json_add_* between json_init and json_dump.
+
 	local current="$1" target="$2" best="$3" reason="$4" best_latency="$5"
 	local candidate_count
 	candidate_count="$(echo "$CANDIDATES" | wc -w | awk '{print $1}')"
 
-	json_init
-	json_add_string enabled               "${ENABLED:-0}"
-	json_add_string passwall_config       "${PASSWALL_CONFIG:-}"
-	json_add_string passwall_section      "${PASSWALL_SECTION:-}"
-	json_add_string current_node          "${current:-}"
-	json_add_string current_label         "$(node_label "$current")"
-	# passwall_default_node: source of truth from PassWall2 UCI itself.
-	# Read fresh on every write_status (UCI lookups are cheap, in-memory).
-	# This decouples UI display from the watchdog's internal cache, fixing
-	# the v0.3.7 "current shows stale node" class of bugs.
-	#
-	# NOTE: NO `local` after json_* calls — busybox ash silently breaks the
-	# function and the rest of fields never get written to status.json.
-	# This was the C7 deploy bug: passwall_running / passwall_alive missing.
-	_PW2WD_PW_DEFAULT="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.${PASSWALL_SECTION:-rulenode}.default_node" 2>/dev/null)"
-	json_add_string passwall_default_node  "${_PW2WD_PW_DEFAULT:-}"
-	json_add_string passwall_default_label "$(node_label "$_PW2WD_PW_DEFAULT")"
-	json_add_int    current_latency       "${CURRENT_LATENCY:-0}"
-	json_add_string initial_default_node  "${INITIAL_DEFAULT_NODE:-}"
-	json_add_string initial_default_label "$(node_label "$INITIAL_DEFAULT_NODE")"
-	json_add_string best_node             "${best:-}"
-	json_add_string best_label            "$(node_label "$best")"
-	json_add_int    best_latency          "${best_latency:-0}"
-	# best_alt: best candidate != current node, shown in Overview as "Best candidate node"
-	json_add_string best_alt_node         "${BEST_ALT_NODE:-}"
-	json_add_string best_alt_label        "$(node_label "$BEST_ALT_NODE")"
-	json_add_int    best_alt_latency      "${BEST_ALT_LATENCY:-0}"
-	json_add_string target_node           "${target:-}"
-	json_add_string target_label          "$(node_label "$target")"
-	json_add_string last_target           "${LAST_TARGET:-}"
-	json_add_string last_target_label     "$(node_label "$LAST_TARGET")"
-	json_add_string last_reason           "${reason:-}"
-	json_add_int    last_switch           "${LAST_SWITCH:-0}"
-	json_add_string node_selection        "${NODE_SELECTION:-auto}"
-	json_add_string fallback_action       "${FALLBACK_ACTION:-blackhole}"
-	json_add_string test_url              "${TEST_URL:-}"
-	json_add_int    candidate_count       "${candidate_count:-0}"
-	json_add_int    recommended_candidates "${RECOMMENDED_CANDIDATES:-0}"
-	json_add_string cpu_model             "${CPU_MODEL:-}"
-	json_add_int    cpu_threads           "${CPU_THREADS:-0}"
-	json_add_int    ram_total_mb          "${RAM_TOTAL_MB:-0}"
-	json_add_string running               "${STATUS_RUNNING:-false}"
-	# passwall_running: PassWall2 itself is enabled in its UCI config.
-	# This is the "intent" — user wants the proxy on. May still mean engine
-	# crashed silently — see passwall_alive below for the actual process.
-	_PW2WD_PW_RUNNING="false"
-	if [ "$(uci -q get ${PASSWALL_CONFIG:-passwall2}.@global[0].enabled 2>/dev/null)" = "1" ]; then
-		_PW2WD_PW_RUNNING="true"
-	fi
-	json_add_string passwall_running      "$_PW2WD_PW_RUNNING"
-	# passwall_alive: independent liveness signal for the proxy engine.
-	# PassWall2 26.4.20 has no `/etc/init.d/passwall2 status`, so we probe
-	# the xray process directly. Cheap (~5ms), runs every write_status.
-	# NOTE: no `local` here — some busybox ash builds choke on `local` after
-	# heredoc/json calls inside a function. Use a uniquely-prefixed global.
-	_PW2WD_XRAY_ALIVE="false"
-	if pgrep -f '/xray' >/dev/null 2>&1; then
-		_PW2WD_XRAY_ALIVE="true"
-	fi
-	json_add_string passwall_alive        "$_PW2WD_XRAY_ALIVE"
+	# Pre-compute all labels (no subshells inside json_init block).
+	_PW2WD_LBL_CURRENT="$(node_label "$current")"
+	_PW2WD_LBL_BEST="$(node_label "$best")"
+	_PW2WD_LBL_BEST_ALT="$(node_label "$BEST_ALT_NODE")"
+	_PW2WD_LBL_TARGET="$(node_label "$target")"
+	_PW2WD_LBL_LAST_TARGET="$(node_label "$LAST_TARGET")"
+	_PW2WD_LBL_INITIAL="$(node_label "$INITIAL_DEFAULT_NODE")"
 
-	# Health counters (drops + leaks + transits) — inline into status.json for UI access.
+	# Pre-compute UCI-derived values.
+	_PW2WD_PW_DEFAULT="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.${PASSWALL_SECTION:-rulenode}.default_node" 2>/dev/null)"
+	_PW2WD_LBL_PW_DEFAULT="$(node_label "$_PW2WD_PW_DEFAULT")"
+
+	# passwall_running: PassWall2 enabled in UCI (intent).
+	_PW2WD_PW_RUNNING="false"
+	_PW2WD_PW_ENABLED="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.@global[0].enabled" 2>/dev/null)"
+	[ "$_PW2WD_PW_ENABLED" = "1" ] && _PW2WD_PW_RUNNING="true"
+
+	# passwall_alive: xray process actually running.
+	_PW2WD_XRAY_ALIVE="false"
+	pgrep -f '/xray' >/dev/null 2>&1 && _PW2WD_XRAY_ALIVE="true"
+
+	# Health counters: read BEFORE json_init (json_load_file conflicts with init).
 	_PW2WD_HC_DROPS=0
 	_PW2WD_HC_DROP_TS=0
 	_PW2WD_HC_LEAKS=0
@@ -726,8 +695,6 @@ write_status() {
 		json_get_var _PW2WD_HC_TRANSITS transits 2>/dev/null
 		json_get_var _PW2WD_HC_TRANSIT_TS last_transit_ts 2>/dev/null
 		json_cleanup 2>/dev/null
-		# json_load_file resets json_init context — restore it for ongoing writes.
-		json_init
 	fi
 	case "$_PW2WD_HC_DROPS"       in ''|*[!0-9]*) _PW2WD_HC_DROPS=0 ;; esac
 	case "$_PW2WD_HC_DROP_TS"     in ''|*[!0-9]*) _PW2WD_HC_DROP_TS=0 ;; esac
@@ -735,6 +702,42 @@ write_status() {
 	case "$_PW2WD_HC_LEAK_TS"     in ''|*[!0-9]*) _PW2WD_HC_LEAK_TS=0 ;; esac
 	case "$_PW2WD_HC_TRANSITS"    in ''|*[!0-9]*) _PW2WD_HC_TRANSITS=0 ;; esac
 	case "$_PW2WD_HC_TRANSIT_TS"  in ''|*[!0-9]*) _PW2WD_HC_TRANSIT_TS=0 ;; esac
+
+	# ----- Now the pure json block: only ${vars}, no $(...) calls -----
+	json_init
+	json_add_string enabled               "${ENABLED:-0}"
+	json_add_string passwall_config       "${PASSWALL_CONFIG:-}"
+	json_add_string passwall_section      "${PASSWALL_SECTION:-}"
+	json_add_string current_node          "${current:-}"
+	json_add_string current_label         "${_PW2WD_LBL_CURRENT:-}"
+	json_add_string passwall_default_node  "${_PW2WD_PW_DEFAULT:-}"
+	json_add_string passwall_default_label "${_PW2WD_LBL_PW_DEFAULT:-}"
+	json_add_int    current_latency       "${CURRENT_LATENCY:-0}"
+	json_add_string initial_default_node  "${INITIAL_DEFAULT_NODE:-}"
+	json_add_string initial_default_label "${_PW2WD_LBL_INITIAL:-}"
+	json_add_string best_node             "${best:-}"
+	json_add_string best_label            "${_PW2WD_LBL_BEST:-}"
+	json_add_int    best_latency          "${best_latency:-0}"
+	json_add_string best_alt_node         "${BEST_ALT_NODE:-}"
+	json_add_string best_alt_label        "${_PW2WD_LBL_BEST_ALT:-}"
+	json_add_int    best_alt_latency      "${BEST_ALT_LATENCY:-0}"
+	json_add_string target_node           "${target:-}"
+	json_add_string target_label          "${_PW2WD_LBL_TARGET:-}"
+	json_add_string last_target           "${LAST_TARGET:-}"
+	json_add_string last_target_label     "${_PW2WD_LBL_LAST_TARGET:-}"
+	json_add_string last_reason           "${reason:-}"
+	json_add_int    last_switch           "${LAST_SWITCH:-0}"
+	json_add_string node_selection        "${NODE_SELECTION:-auto}"
+	json_add_string fallback_action       "${FALLBACK_ACTION:-blackhole}"
+	json_add_string test_url              "${TEST_URL:-}"
+	json_add_int    candidate_count       "${candidate_count:-0}"
+	json_add_int    recommended_candidates "${RECOMMENDED_CANDIDATES:-0}"
+	json_add_string cpu_model             "${CPU_MODEL:-}"
+	json_add_int    cpu_threads           "${CPU_THREADS:-0}"
+	json_add_int    ram_total_mb          "${RAM_TOTAL_MB:-0}"
+	json_add_string running               "${STATUS_RUNNING:-false}"
+	json_add_string passwall_running      "${_PW2WD_PW_RUNNING:-false}"
+	json_add_string passwall_alive        "${_PW2WD_XRAY_ALIVE:-false}"
 	json_add_int health_drops             "$_PW2WD_HC_DROPS"
 	json_add_int health_last_drop_ts      "$_PW2WD_HC_DROP_TS"
 	json_add_int health_leaks             "$_PW2WD_HC_LEAKS"
