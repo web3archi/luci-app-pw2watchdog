@@ -200,12 +200,23 @@ rotate_candidates_if_auto() {
 
 	log "rotate (planned): old=[$current_candidates] new=[$filtered]"
 
-	# Update UCI
+	# Update UCI staging — these don't trigger PW2 reload yet.
 	uci -q delete "${CONFIG_NAME}.main.candidate_node"
 	for node in $filtered; do
 		uci -q add_list "${CONFIG_NAME}.main.candidate_node=$node"
 	done
-	uci commit "$CONFIG_NAME"
+
+	# C9.3: wrap `uci commit` in transit-around — it inserts a temporary
+	# blackhole DROP into PSW2_MANGLE, runs the commit (PW2 reloads, xray
+	# restarts for 30-60s), waits for xray :1070 to come back, then removes
+	# the DROP. Also stamps LAST_SWITCH so any direct-state slip is classified
+	# as a transit, not a leak. Falls back to plain commit if env not ready.
+	if [ -x /usr/bin/pw2watchdog.sh ]; then
+		/usr/bin/pw2watchdog.sh transit-around uci commit "$CONFIG_NAME"
+	else
+		log "rotate: pw2watchdog.sh missing, running plain uci commit (no transit protection)"
+		uci commit "$CONFIG_NAME"
+	fi
 
 	log "rotate (planned): done, new candidates: $filtered"
 	return 0

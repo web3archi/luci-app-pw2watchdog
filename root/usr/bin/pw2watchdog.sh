@@ -1960,6 +1960,106 @@ cmd_stats() {
 	fi
 }
 
+# ---------------------------------------------------------------------------
+# C9.3: transit-around — wrap an external action (e.g. scanner UCI commit
+# that triggers PassWall2 reload) with a transit-blackhole drop rule.
+#
+# Usage: pw2watchdog.sh transit-around <shell-command...>
+#
+# Sequence:
+#   1. Pre-check that PSW2_MANGLE chain exists. If not — nothing to protect
+#      (PW2 already down), run the command without blackhole and exit.
+#   2. Insert `counter drop` as first rule in PSW2_MANGLE (3 retries).
+#   3. Execute the supplied command ("$@" after 'transit-around').
+#   4. Wait for xray :1070 to answer 204 (up to 60s).
+#   5. Remove the drop rule.
+#   6. Increment health_transits counter, log history.
+#
+# Called by pw2watchdog-scanner.sh around `uci commit passwall2` when the
+# candidate list changes (which triggers PW2 reload and a 30-60s xray gap).
+# ---------------------------------------------------------------------------
+cmd_transit_around() {
+	local cmd_rc=0 handle nft_table nft_chain wait_timeout=60
+	local nft_err insert_rc attempt=0 cur_handle
+
+	load_env
+	load_cfg
+
+	nft_table="$PW2_NFTABLE_NAME"
+	nft_chain="$PW2_NFTCHAIN_MANGLE"
+
+	if [ -z "$nft_table" ] || [ -z "$nft_chain" ] || [ "${PW2_ENV_OK:-0}" -ne 1 ]; then
+		log "transit-around: env not ready (table='$nft_table' chain='$nft_chain' env_ok=${PW2_ENV_OK:-0}), running command without blackhole"
+		"$@"
+		return $?
+	fi
+
+	# Pre-check chain exists
+	if ! nft list chain $nft_table "$nft_chain" >/dev/null 2>&1; then
+		log "transit-around: chain '$nft_chain' missing — PW2 already down, running command without blackhole"
+		"$@"
+		return $?
+	fi
+
+	# Insert drop with retry
+	insert_rc=1
+	while [ $attempt -lt 3 ]; do
+		nft_err="$(nft insert rule $nft_table "$nft_chain" counter drop 2>&1)"
+		insert_rc=$?
+		[ $insert_rc -eq 0 ] && break
+		attempt=$(( attempt + 1 ))
+		log "transit-around: insert attempt $attempt failed rc=$insert_rc nft=\"$nft_err\""
+	done
+	if [ $insert_rc -ne 0 ]; then
+		log "transit-around: failed to insert drop after 3 attempts (nft: \"$nft_err\"), running command without blackhole"
+		"$@"
+		return $?
+	fi
+
+	handle="$(nft -a list chain $nft_table $nft_chain 2>/dev/null \
+		| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1; exit}')"
+	log "transit-around: DROP inserted handle=$handle"
+
+	# Run the wrapped command (this is what triggers PW2 reload)
+	"$@"
+	cmd_rc=$?
+
+	# Wait for proxy ready (xray answering 204 on :1070).
+	# pw2_wait_proxy_ready is provided by pw2watchdog-env.sh sourced via load_env.
+	if pw2_wait_proxy_ready "$wait_timeout" 2>/dev/null; then
+		log "transit-around: proxy ready after ${wait_timeout}s wait window"
+	else
+		log "transit-around: proxy NOT ready after ${wait_timeout}s — removing DROP anyway"
+	fi
+
+	# Remove DROP — re-read handle (PW2 reload likely recreated the chain)
+	cur_handle="$(nft -a list chain $nft_table $nft_chain 2>/dev/null \
+		| awk '/drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1; exit}')"
+	if [ -z "$cur_handle" ]; then
+		log "transit-around: DROP gone (chain recreated by PW2)"
+	elif nft delete rule $nft_table "$nft_chain" handle "$cur_handle" 2>/dev/null; then
+		log "transit-around: DROP removed (handle=$cur_handle)"
+	else
+		log "transit-around: DROP already gone (handle=$cur_handle)"
+	fi
+
+	# Mark LAST_SWITCH in state-file so that if a stray 'direct' state slips
+	# through (e.g. proxy_check fires before xray fully back up), the next
+	# _update_health_counters call classifies it as a transit (±120s window),
+	# not a leak. Use atomic sed/append, mirroring scanner's LAST_SCAN_TS write.
+	local _now="$(date +%s)"
+	if [ -f "$STATE_FILE" ]; then
+		if grep -q '^LAST_SWITCH=' "$STATE_FILE" 2>/dev/null; then
+			sed -i "s/^LAST_SWITCH=[0-9]*/LAST_SWITCH=$_now/" "$STATE_FILE" 2>/dev/null
+		else
+			echo "LAST_SWITCH=$_now" >> "$STATE_FILE"
+		fi
+		log "transit-around: stamped LAST_SWITCH=$_now in state-file (transit-window protection)"
+	fi
+
+	return $cmd_rc
+}
+
 case "$1" in
 run)    run_once    ;;
 daemon) daemon_loop ;;
@@ -1969,8 +2069,13 @@ stats)
 	shift
 	cmd_stats "$@"
 	;;
+transit-around)
+	shift
+	[ $# -gt 0 ] || { echo "Usage: $0 transit-around <command...>" >&2; exit 2; }
+	cmd_transit_around "$@"
+	;;
 *)
-	echo "Usage: $0 {run|daemon|stats [N]}"
+	echo "Usage: $0 {run|daemon|stats [N]|transit-around <cmd...>}"
 	exit 1
 	;;
 esac
