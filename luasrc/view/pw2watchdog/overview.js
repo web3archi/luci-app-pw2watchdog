@@ -350,14 +350,19 @@ function extractFlag(label) {
 }
 
 /* ------------------------------------------------------------------ *
- *  Health Overview — главная плашка на человеческом языке (v0.4.0).
+ *  Health Overview — main panel (v0.4.0, Commit 8 logic refactor).
  *
- *  Показывает 3 строки:
- *    1) Текущая нода — из PassWall2 UCI (source of truth)
- *    2) Состояние — хуманизированный badge
- *    3) Реальный выход — ext_ip + node_label из proxy_check
+ *  Main block (always visible):
+ *    1) PassWall2     — Running / Stopped
+ *    2) Watchdog      — Running / Stopped
+ *    3) Proxy status  — Working / Blocked (killswitch) / Leaking direct / No response
  *
- *  Технические детали (HTTP code, port, raw URL) — под <details>.
+ *  Details (collapsible):
+ *    - Last proxy check
+ *    - Last node switch
+ *    - Connection drops   (killswitch fired — red if > 0)
+ *    - Direct leaks       (real WAN leak — yellow if fallback_action=direct, red otherwise)
+ *    - Rotation transits  (PW2 restart-gap during rotation — green/neutral)
  * ------------------------------------------------------------------ */
 function renderHealthOverview(status, nodeIndex, detailsOpen) {
 	var pwDefault    = status.passwall_default_node  || status.current_node || '';
@@ -375,58 +380,75 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 	var connPort     = status.conn_check_port        || '';
 	var lastSwitch   = Number(status.last_switch     || 0);
 	var lastTargetLabel = status.last_target_label   || status.last_target || '';
-	var healthDrops    = Number(status.health_drops          || 0);
-	var healthDropTs   = Number(status.health_last_drop_ts   || 0);
-	var healthLeaks    = Number(status.health_leaks          || 0);
-	var healthLeakTs   = Number(status.health_last_leak_ts   || 0);
+	var healthDrops      = Number(status.health_drops            || 0);
+	var healthDropTs     = Number(status.health_last_drop_ts     || 0);
+	var healthLeaks      = Number(status.health_leaks            || 0);
+	var healthLeakTs     = Number(status.health_last_leak_ts     || 0);
+	var healthTransits   = Number(status.health_transits         || 0);
+	var healthTransitTs  = Number(status.health_last_transit_ts  || 0);
+	var fallbackAction   = status.fallback_action                || 'blackhole';
 	var nowSec       = Math.floor(Date.now() / 1000);
 	var checkUrl     = uci.get('pw2watchdog', 'advanced', 'proxy_check_url')
 	                || 'https://api.ipify.org';
 	var connUrl      = uci.get('pw2watchdog', 'connectivity', 'test_url')
 	                || 'https://www.google.com/generate_204';
 
-	/* PassWall2 line — intent from UCI (enabled=1). */
+	/* Row 1: PassWall2 — intent from UCI (enabled=1). */
 	var pwHuman, pwAlertClass;
 	if (pwRunning === 'true') {
-		pwHuman = _('Running');                          pwAlertClass = 'alert-message success';
+		pwHuman = '\u{1F7E2} ' + _('Running');           pwAlertClass = 'alert-message success';
 	} else if (pwRunning === 'false') {
-		pwHuman = _('Stopped');                          pwAlertClass = 'alert-message danger';
+		pwHuman = '\u{1F534} ' + _('Stopped');           pwAlertClass = 'alert-message danger';
 	} else {
 		pwHuman = _('Unknown');                          pwAlertClass = 'alert-message';
 	}
 
-	/* Watchdog line — what the daemon actually sees. */
-	var humanState, alertClass;
-	if (pwAlive === 'false') {
-		humanState = _('Proxy engine not running');      alertClass = 'alert-message danger';
-	} else if (proxyEnabled !== '1') {
-		humanState = _('Check disabled');                alertClass = 'alert-message';
-	} else if (!pwDefault) {
-		humanState = _('No node configured');            alertClass = 'alert-message';
-	} else if (proxyState === 'blackhole') {
-		humanState = _('Blocked (emergency)');           alertClass = 'alert-message danger';
-	} else if (proxyState === 'proxy_no_204') {
-		humanState = _('Traffic not flowing');           alertClass = 'alert-message danger';
-	} else if (proxyState === 'direct') {
-		humanState = _('Traffic leak');                  alertClass = 'alert-message danger';
-	} else if (proxyState === 'no_response') {
-		humanState = _('No response (will retry)');      alertClass = 'alert-message warning';
-	} else if (proxyState === 'proxy_ok' && proxyIp && !proxyNode) {
-		humanState = _('Working (unrecognised exit)');   alertClass = 'alert-message warning';
-	} else if (proxyState === 'proxy_ok') {
-		humanState = _('Working');                       alertClass = 'alert-message success';
-	} else if (lastSwitch > 0 && (nowSec - lastSwitch) < 90) {
-		humanState = _('Checking\u2026');               alertClass = 'alert-message warning';
-	} else if (!proxyState || proxyState === 'unknown') {
-		humanState = _('Pending check\u2026');          alertClass = 'alert-message';
+	/* Row 2: Watchdog — is the daemon itself running? */
+	var wdRunning = status.running || 'false';
+	var wdHuman, wdAlertClass;
+	if (wdRunning === 'true') {
+		wdHuman = '\u{1F7E2} ' + _('Running');           wdAlertClass = 'alert-message success';
 	} else {
-		humanState = _('Unknown state');                 alertClass = 'alert-message';
+		wdHuman = '\u{1F534} ' + _('Stopped');           wdAlertClass = 'alert-message danger';
+	}
+
+	/* Row 3: Proxy status — unified human-readable state. */
+	var proxyHuman, proxyAlertClass;
+	if (pwAlive === 'false') {
+		proxyHuman = '\u{1F534} ' + _('Proxy engine not running');  proxyAlertClass = 'alert-message danger';
+	} else if (proxyEnabled !== '1') {
+		proxyHuman = _('Check disabled');                           proxyAlertClass = 'alert-message';
+	} else if (!pwDefault) {
+		proxyHuman = _('No node configured');                       proxyAlertClass = 'alert-message';
+	} else if (proxyState === 'blackhole') {
+		proxyHuman = '\u{1F534} ' + _('Blocked (killswitch active)'); proxyAlertClass = 'alert-message danger';
+	} else if (proxyState === 'proxy_no_204') {
+		proxyHuman = '\u{1F534} ' + _('Proxy unreachable');         proxyAlertClass = 'alert-message danger';
+	} else if (proxyState === 'direct') {
+		/* Leaking direct — yellow if intentional (fallback=direct), red otherwise */
+		if (fallbackAction === 'direct') {
+			proxyHuman = '\u26A0\uFE0F ' + _('Leaking direct (by design)');  proxyAlertClass = 'alert-message warning';
+		} else {
+			proxyHuman = '\u{1F534} ' + _('Leaking direct');                 proxyAlertClass = 'alert-message danger';
+		}
+	} else if (proxyState === 'no_response') {
+		proxyHuman = '\u{1F534} ' + _('No response');               proxyAlertClass = 'alert-message danger';
+	} else if (proxyState === 'proxy_ok' && proxyIp && !proxyNode) {
+		proxyHuman = '\u26A0\uFE0F ' + _('Working (unrecognised exit)'); proxyAlertClass = 'alert-message warning';
+	} else if (proxyState === 'proxy_ok') {
+		proxyHuman = '\u{1F7E2} ' + _('Working');                   proxyAlertClass = 'alert-message success';
+	} else if (lastSwitch > 0 && (nowSec - lastSwitch) < 90) {
+		proxyHuman = _('Checking\u2026');                           proxyAlertClass = 'alert-message warning';
+	} else if (!proxyState || proxyState === 'unknown') {
+		proxyHuman = _('Pending check\u2026');                      proxyAlertClass = 'alert-message';
+	} else {
+		proxyHuman = _('Unknown state');                            proxyAlertClass = 'alert-message';
 	}
 
 	/* Build LuCI-styled table rows */
 	var healthTable = E('table', { 'class': 'table cbi-section-table', 'style': 'width:100%;' });
 
-	/* Row 1: PassWall2 — intent (enabled in UCI) */
+	/* Main Row 1: PassWall2 */
 	var pwStateEl = E('span', { 'class': pwAlertClass, 'style': 'display:inline-block;padding:4px 10px;margin:0;font-weight:600;' }, pwHuman);
 	healthTable.appendChild(makeRow(
 		_('PassWall2'),
@@ -434,104 +456,20 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 		_('Whether PassWall2 itself is enabled in UCI (the user\u2019s intent).')
 	));
 
-	/* Row 2: Watchdog — what the daemon actually observes */
-	var stateValueEl = E('span', { 'class': alertClass, 'style': 'display:inline-block;padding:4px 10px;margin:0;font-weight:600;' }, humanState);
+	/* Main Row 2: Watchdog */
+	var wdStateEl = E('span', { 'class': wdAlertClass, 'style': 'display:inline-block;padding:4px 10px;margin:0;font-weight:600;' }, wdHuman);
 	healthTable.appendChild(makeRow(
 		_('Watchdog'),
-		stateValueEl,
-		_('What the watchdog sees right now. Plain language \u2014 see Details for raw values.')
+		wdStateEl,
+		_('Whether the pw2watchdog daemon is currently running.')
 	));
 
-	/* Row 3: Current node (from PassWall2 UCI) */
-	var currentMeta = getNodeMeta(nodeIndex, pwDefault);
-	var currentValueEl;
-	if (pwDefault && currentMeta && currentMeta.label) {
-		currentValueEl = E('span', {}, currentMeta.label);
-	} else if (pwDefault) {
-		currentValueEl = E('span', {}, pwLabel || pwDefault);
-	} else {
-		currentValueEl = E('em', {}, _('not configured'));
-	}
+	/* Main Row 3: Proxy status (the unified human-readable state) */
+	var proxyStateEl = E('span', { 'class': proxyAlertClass, 'style': 'display:inline-block;padding:4px 10px;margin:0;font-weight:600;' }, proxyHuman);
 	healthTable.appendChild(makeRow(
-		_('Current node'),
-		currentValueEl,
-		_('Active PassWall2 default node (from UCI \u2014 the source of truth).')
-	));
-
-	/* Row 4: Real exit (only if proxy_check is enabled and has data) */
-	if (proxyEnabled === '1') {
-		var realValueEl;
-		if (proxyIp) {
-			var exitName = proxyNode || _('unrecognised exit');
-			realValueEl = E('span', {}, [
-				E('span', {}, exitName),
-				E('span', {}, ' \u2014 '),
-				E('code', { 'style': 'font-family:monospace;' }, proxyIp)
-			]);
-		} else {
-			realValueEl = E('em', {}, _('pending check\u2026'));
-		}
-		healthTable.appendChild(makeRow(
-			_('Real exit'),
-			realValueEl,
-			_('Observed external IP and matching subscription node (via the IP-echo service).')
-		));
-	}
-
-	/* Row 5: Last node switch */
-	var lastSwitchEl;
-	if (lastSwitch > 0) {
-		var lsWhen = new Date(lastSwitch * 1000).toLocaleString();
-		if (lastTargetLabel) {
-			lastSwitchEl = E('span', {}, [
-				E('span', {}, lastTargetLabel),
-				E('span', {}, ' \u2014 '),
-				E('span', { 'style': 'font-family:monospace;' }, lsWhen)
-			]);
-		} else {
-			lastSwitchEl = E('span', { 'style': 'font-family:monospace;' }, lsWhen);
-		}
-	} else {
-		lastSwitchEl = E('em', {}, _('never'));
-	}
-	healthTable.appendChild(makeRow(
-		_('Last node switch'),
-		lastSwitchEl,
-		_('When the watchdog last switched the active node (and which node it switched to).')
-	));
-
-	/* Row 6: Connection drops (persistent counter) */
-	var dropsEl;
-	if (healthDrops > 0 && healthDropTs > 0) {
-		dropsEl = E('span', {}, [
-			E('span', { 'style': 'font-weight:600;' }, String(healthDrops)),
-			E('span', {}, ' ' + (healthDrops === 1 ? _('time') : _('times')) + ' \u2014 ' + _('last') + ' '),
-			E('span', { 'style': 'font-family:monospace;' }, new Date(healthDropTs * 1000).toLocaleString())
-		]);
-	} else {
-		dropsEl = E('span', { 'style': 'color:var(--success-color,#3a9636);' }, '0');
-	}
-	healthTable.appendChild(makeRow(
-		_('Connection drops'),
-		dropsEl,
-		_('Transitions from a working proxy to any failure state since the daemon started.')
-	));
-
-	/* Row 7: Direct leaks (persistent counter) */
-	var leaksEl;
-	if (healthLeaks > 0 && healthLeakTs > 0) {
-		leaksEl = E('span', {}, [
-			E('span', { 'style': 'font-weight:600;color:#c0392b;' }, String(healthLeaks)),
-			E('span', {}, ' ' + (healthLeaks === 1 ? _('time') : _('times')) + ' \u2014 ' + _('last') + ' '),
-			E('span', { 'style': 'font-family:monospace;' }, new Date(healthLeakTs * 1000).toLocaleString())
-		]);
-	} else {
-		leaksEl = E('span', { 'style': 'color:var(--success-color,#3a9636);' }, '0');
-	}
-	healthTable.appendChild(makeRow(
-		_('Direct leaks'),
-		leaksEl,
-		_('How many times traffic exited bypassing the proxy (matched DIRECT_IP_RANGES).')
+		_('Proxy status'),
+		proxyStateEl,
+		_('Real-time proxy state. See Details for last check timestamp and counters.')
 	));
 
 	/* Mismatch warning: configured node vs real exit */
@@ -552,30 +490,69 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 		}
 	}
 
-	/* Details accordion — technical fields. Inherit colors from LuCI theme. */
-	var fmtTs = proxyTs > 0 ? new Date(proxyTs * 1000).toLocaleString() : '-';
-	var detailLines = [];
-	detailLines.push([ _('Backend state'),       proxyState || '-' ]);
-	if (proxyEnabled === '1') {
-		detailLines.push([ _('IP-echo URL'),     checkUrl ]);
-		detailLines.push([ _('Last IP check'),   fmtTs ]);
-	}
-	if (connEnabled === '1') {
-		detailLines.push([ _('Live test URL'),   connUrl ]);
-		detailLines.push([ _('Live test result'),
-			connReason
-				? (connReason + (connPort ? (' (port ' + connPort + ')') : ''))
-				: '-' ]);
+	/* Details accordion — last checks + counters + last node switch. */
+	var fmtProxyTs = proxyTs > 0 ? new Date(proxyTs * 1000).toLocaleString() : '-';
+
+	/* Last node switch — formatted with node label */
+	var lastSwitchText = '-';
+	if (lastSwitch > 0) {
+		var lsWhen = new Date(lastSwitch * 1000).toLocaleString();
+		lastSwitchText = lastTargetLabel
+			? (lastTargetLabel + ' \u2014 ' + lsWhen)
+			: lsWhen;
 	} else {
-		detailLines.push([ _('Live test'),       _('disabled \u2014 enable in Settings \u2192 Live connectivity check') ]);
+		lastSwitchText = _('never');
 	}
 
+	/* Counter helpers — build rich (icon + count + last time) elements. */
+	function counterCell(count, lastTs, severity) {
+		/* severity: 'red' | 'yellow' | 'green' */
+		var icon, color;
+		if (count <= 0) {
+			icon = '\u{1F7E2}';   /* green circle */
+			color = 'var(--success-color,#3a9636)';
+			return E('span', { 'style': 'color:' + color + ';' }, icon + ' 0');
+		}
+		if (severity === 'red') {
+			icon = '\u26A0\uFE0F'; color = '#c0392b';
+		} else if (severity === 'yellow') {
+			icon = '\u26A0\uFE0F'; color = '#d4a017';
+		} else {
+			icon = '\u{1F7E2}';   color = 'var(--success-color,#3a9636)';
+		}
+		var suffix = (count === 1 ? _('time') : _('times'))
+		           + ' \u2014 ' + _('last') + ' ' + new Date(lastTs * 1000).toLocaleString();
+		return E('span', { 'style': 'color:' + color + ';' }, [
+			E('span', {}, icon + ' '),
+			E('span', { 'style': 'font-weight:600;' }, String(count)),
+			E('span', { 'style': 'font-weight:400;font-family:monospace;' }, ' ' + suffix)
+		]);
+	}
+
+	var dropsCell    = counterCell(healthDrops,    healthDropTs,    'red');
+	/* Leaks: yellow if fallback_action=direct (intentional), red otherwise. */
+	var leaksCell    = counterCell(healthLeaks,    healthLeakTs,
+	                               fallbackAction === 'direct' ? 'yellow' : 'red');
+	/* Transits: always green — normal rotation gap, not an error. */
+	var transitsCell = counterCell(healthTransits, healthTransitTs, 'green');
+
+	/* Detail rows: [label, value-element-or-string, help-text] */
+	var detailRows = [
+		[ _('Last proxy check'),  fmtProxyTs,
+		  _('Most recent run of the proxy IP-echo check.') ],
+		[ _('Last node switch'),  lastSwitchText,
+		  _('When the watchdog last switched the active node.') ],
+		[ _('Connection drops'),  dropsCell,
+		  _('Transitions from working proxy to killswitch state since the daemon started.') ],
+		[ _('Direct leaks'),      leaksCell,
+		  _('Times traffic exited via WAN bypassing the proxy. Yellow when fallback_action=direct (by design); red otherwise.') ],
+		[ _('Rotation transits'), transitsCell,
+		  _('Short WAN exits during PassWall2 node rotations (xray restart window, \u2264 120s). Normal operation.') ]
+	];
+
 	var detailsTable = E('table', { 'class': 'table cbi-section-table', 'style': 'width:100%;margin-top:0.5em;' });
-	detailLines.forEach(function(pair) {
-		detailsTable.appendChild(E('tr', { 'class': 'tr cbi-section-table-row' }, [
-			E('td', { 'class': 'td', 'style': 'font-weight:600;width:30%;padding:6px 8px;' }, pair[0]),
-			E('td', { 'class': 'td', 'style': 'padding:6px 8px;font-family:monospace;word-break:break-all;' }, pair[1])
-		]));
+	detailRows.forEach(function(row) {
+		detailsTable.appendChild(makeRow(row[0], row[1], row[2]));
 	});
 
 	var detailsEl = E('details', { 'class': 'pw2-health-details', 'style': 'margin-top:0.5em;' }, [

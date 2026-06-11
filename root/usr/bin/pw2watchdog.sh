@@ -213,32 +213,59 @@ _record_proxy_check_event() {
 }
 
 # ---------------------------------------------------------------------------
-# _update_health_counters: persistent drop/leak counters for Health UI.
+# _update_health_counters: persistent counters for Health UI (Commit 8).
+#
+# Three categories of proxy state transitions:
+#
+#   drops    — killswitch fired (proxy stopped, no leak to direct)
+#              proxy_ok → blackhole / no_response / proxy_no_204
+#
+#   leaks    — real direct-leak (traffic went out through WAN)
+#              proxy_ok → direct  AND outside rotation window
+#              ("outside" = > 120s since LAST_SWITCH)
+#              In `fallback_action=direct` mode this is BY DESIGN — still
+#              count it; UI colors it yellow vs red based on the mode.
+#
+#   transits — PassWall2 internal rotation gap (xray restart window)
+#              proxy_ok → direct  AND within ±120s of LAST_SWITCH
+#              Normal operation: PW2 takes 30–60s to restart xray, traffic
+#              briefly exits via WAN. Counted separately so leaks count
+#              stays clean.
 #
 # Counters live in $STATE_DIR/health_counters.json:
-#   { "drops": N, "last_drop_ts": TS,
-#     "leaks": N, "last_leak_ts": TS }
+#   { "drops":    N, "last_drop_ts":    TS,
+#     "leaks":    N, "last_leak_ts":    TS,
+#     "transits": N, "last_transit_ts": TS }
 #
 # Read-modify-write via json_init/json_load_file (atomic enough for a
 # single-writer daemon; no locking needed).
 # ---------------------------------------------------------------------------
 _update_health_counters() {
-	local prev="$1" curr="$2"
-	local is_drop=0 is_leak=0
+	prev="$1"; curr="$2"
+	is_drop=0; is_leak=0; is_transit=0
 
-	# Drop: was proxy_ok, now anything else (broken / no_response / etc).
-	if [ "$prev" = "proxy_ok" ] && [ "$curr" != "proxy_ok" ]; then
+	# Drop: was proxy_ok, now broken (NOT direct — direct is leak/transit).
+	if [ "$prev" = "proxy_ok" ] && [ "$curr" != "proxy_ok" ] && [ "$curr" != "direct" ]; then
 		is_drop=1
 	fi
-	# Leak: just entered direct (regardless of previous state).
+
+	# Direct transition — split into leak vs transit by rotation-window proximity.
 	if [ "$curr" = "direct" ] && [ "$prev" != "direct" ]; then
-		is_leak=1
+		now_ts="$(date +%s)"
+		since_switch=$(( now_ts - ${LAST_SWITCH:-0} ))
+		# Negative since_switch (LAST_SWITCH=0 — fresh boot, no switches yet)
+		# behaves as "old" — count as leak.
+		if [ "${LAST_SWITCH:-0}" -gt 0 ] && [ $since_switch -ge 0 ] && [ $since_switch -le 120 ]; then
+			is_transit=1
+		else
+			is_leak=1
+		fi
 	fi
 
-	[ $is_drop -eq 0 ] && [ $is_leak -eq 0 ] && return 0
+	[ $is_drop -eq 0 ] && [ $is_leak -eq 0 ] && [ $is_transit -eq 0 ] && return 0
 
-	local counters_file="$STATE_DIR/health_counters.json"
-	local drops=0 last_drop_ts=0 leaks=0 last_leak_ts=0
+	counters_file="$STATE_DIR/health_counters.json"
+	drops=0; last_drop_ts=0; leaks=0; last_leak_ts=0; transits=0; last_transit_ts=0
 
 	if [ -f "$counters_file" ]; then
 		json_load_file "$counters_file" 2>/dev/null
@@ -246,16 +273,19 @@ _update_health_counters() {
 		json_get_var last_drop_ts last_drop_ts 2>/dev/null
 		json_get_var leaks leaks 2>/dev/null
 		json_get_var last_leak_ts last_leak_ts 2>/dev/null
+		json_get_var transits transits 2>/dev/null
+		json_get_var last_transit_ts last_transit_ts 2>/dev/null
 		json_cleanup 2>/dev/null
 	fi
 
 	# Sanitize — anything non-numeric becomes 0.
-	case "$drops"          in ''|*[!0-9]*) drops=0 ;; esac
-	case "$last_drop_ts"   in ''|*[!0-9]*) last_drop_ts=0 ;; esac
-	case "$leaks"          in ''|*[!0-9]*) leaks=0 ;; esac
-	case "$last_leak_ts"   in ''|*[!0-9]*) last_leak_ts=0 ;; esac
+	case "$drops"           in ''|*[!0-9]*) drops=0 ;; esac
+	case "$last_drop_ts"    in ''|*[!0-9]*) last_drop_ts=0 ;; esac
+	case "$leaks"           in ''|*[!0-9]*) leaks=0 ;; esac
+	case "$last_leak_ts"    in ''|*[!0-9]*) last_leak_ts=0 ;; esac
+	case "$transits"        in ''|*[!0-9]*) transits=0 ;; esac
+	case "$last_transit_ts" in ''|*[!0-9]*) last_transit_ts=0 ;; esac
 
-	local now
 	now="$(date +%s)"
 	if [ $is_drop -eq 1 ]; then
 		drops=$((drops + 1))
@@ -267,12 +297,19 @@ _update_health_counters() {
 		last_leak_ts="$now"
 		log "health_counter: leak $prev→$curr (total=$leaks)"
 	fi
+	if [ $is_transit -eq 1 ]; then
+		transits=$((transits + 1))
+		last_transit_ts="$now"
+		log "health_counter: transit $prev→$curr (rotation window, total=$transits)"
+	fi
 
 	json_init
-	json_add_int drops          "$drops"
-	json_add_int last_drop_ts   "$last_drop_ts"
-	json_add_int leaks          "$leaks"
-	json_add_int last_leak_ts   "$last_leak_ts"
+	json_add_int drops             "$drops"
+	json_add_int last_drop_ts      "$last_drop_ts"
+	json_add_int leaks             "$leaks"
+	json_add_int last_leak_ts      "$last_leak_ts"
+	json_add_int transits          "$transits"
+	json_add_int last_transit_ts   "$last_transit_ts"
 	json_dump > "$counters_file"
 }
 
@@ -622,10 +659,13 @@ write_status() {
 	# Read fresh on every write_status (UCI lookups are cheap, in-memory).
 	# This decouples UI display from the watchdog's internal cache, fixing
 	# the v0.3.7 "current shows stale node" class of bugs.
-	local pw_default
-	pw_default="$(uci -q get "${PASSWALL_CONFIG}.${PASSWALL_SECTION}.default_node" 2>/dev/null)"
-	json_add_string passwall_default_node  "${pw_default:-}"
-	json_add_string passwall_default_label "$(node_label "$pw_default")"
+	#
+	# NOTE: NO `local` after json_* calls — busybox ash silently breaks the
+	# function and the rest of fields never get written to status.json.
+	# This was the C7 deploy bug: passwall_running / passwall_alive missing.
+	_PW2WD_PW_DEFAULT="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.${PASSWALL_SECTION:-rulenode}.default_node" 2>/dev/null)"
+	json_add_string passwall_default_node  "${_PW2WD_PW_DEFAULT:-}"
+	json_add_string passwall_default_label "$(node_label "$_PW2WD_PW_DEFAULT")"
 	json_add_int    current_latency       "${CURRENT_LATENCY:-0}"
 	json_add_string initial_default_node  "${INITIAL_DEFAULT_NODE:-}"
 	json_add_string initial_default_label "$(node_label "$INITIAL_DEFAULT_NODE")"
@@ -670,29 +710,37 @@ write_status() {
 	fi
 	json_add_string passwall_alive        "$_PW2WD_XRAY_ALIVE"
 
-	# Health counters (drops + leaks) — inline into status.json for UI access.
+	# Health counters (drops + leaks + transits) — inline into status.json for UI access.
 	_PW2WD_HC_DROPS=0
 	_PW2WD_HC_DROP_TS=0
 	_PW2WD_HC_LEAKS=0
 	_PW2WD_HC_LEAK_TS=0
+	_PW2WD_HC_TRANSITS=0
+	_PW2WD_HC_TRANSIT_TS=0
 	if [ -f "$STATE_DIR/health_counters.json" ]; then
 		json_load_file "$STATE_DIR/health_counters.json" 2>/dev/null
 		json_get_var _PW2WD_HC_DROPS drops 2>/dev/null
 		json_get_var _PW2WD_HC_DROP_TS last_drop_ts 2>/dev/null
 		json_get_var _PW2WD_HC_LEAKS leaks 2>/dev/null
 		json_get_var _PW2WD_HC_LEAK_TS last_leak_ts 2>/dev/null
+		json_get_var _PW2WD_HC_TRANSITS transits 2>/dev/null
+		json_get_var _PW2WD_HC_TRANSIT_TS last_transit_ts 2>/dev/null
 		json_cleanup 2>/dev/null
 		# json_load_file resets json_init context — restore it for ongoing writes.
 		json_init
 	fi
-	case "$_PW2WD_HC_DROPS"    in ''|*[!0-9]*) _PW2WD_HC_DROPS=0 ;; esac
-	case "$_PW2WD_HC_DROP_TS"  in ''|*[!0-9]*) _PW2WD_HC_DROP_TS=0 ;; esac
-	case "$_PW2WD_HC_LEAKS"    in ''|*[!0-9]*) _PW2WD_HC_LEAKS=0 ;; esac
-	case "$_PW2WD_HC_LEAK_TS"  in ''|*[!0-9]*) _PW2WD_HC_LEAK_TS=0 ;; esac
-	json_add_int health_drops         "$_PW2WD_HC_DROPS"
-	json_add_int health_last_drop_ts  "$_PW2WD_HC_DROP_TS"
-	json_add_int health_leaks         "$_PW2WD_HC_LEAKS"
-	json_add_int health_last_leak_ts  "$_PW2WD_HC_LEAK_TS"
+	case "$_PW2WD_HC_DROPS"       in ''|*[!0-9]*) _PW2WD_HC_DROPS=0 ;; esac
+	case "$_PW2WD_HC_DROP_TS"     in ''|*[!0-9]*) _PW2WD_HC_DROP_TS=0 ;; esac
+	case "$_PW2WD_HC_LEAKS"       in ''|*[!0-9]*) _PW2WD_HC_LEAKS=0 ;; esac
+	case "$_PW2WD_HC_LEAK_TS"     in ''|*[!0-9]*) _PW2WD_HC_LEAK_TS=0 ;; esac
+	case "$_PW2WD_HC_TRANSITS"    in ''|*[!0-9]*) _PW2WD_HC_TRANSITS=0 ;; esac
+	case "$_PW2WD_HC_TRANSIT_TS"  in ''|*[!0-9]*) _PW2WD_HC_TRANSIT_TS=0 ;; esac
+	json_add_int health_drops             "$_PW2WD_HC_DROPS"
+	json_add_int health_last_drop_ts      "$_PW2WD_HC_DROP_TS"
+	json_add_int health_leaks             "$_PW2WD_HC_LEAKS"
+	json_add_int health_last_leak_ts      "$_PW2WD_HC_LEAK_TS"
+	json_add_int health_transits          "$_PW2WD_HC_TRANSITS"
+	json_add_int health_last_transit_ts   "$_PW2WD_HC_TRANSIT_TS"
 	json_add_int    last_scan_ts          "${LAST_SCAN_TS:-0}"
 	json_add_int    last_pw2_restart      "${LAST_PW2_RESTART:-0}"
 	json_add_string proxy_check_enabled   "${PROXY_CHECK_ENABLED:-0}"
