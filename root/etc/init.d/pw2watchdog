@@ -101,13 +101,30 @@ stop() {
 	# Clean up static blackhole nft rule (Layered Robustness: use env.static)
 	cleanup_stale_blackhole stop
 
-	# Kill all instances (by name — covers manually started processes too)
+	# Kill by PID file first (most reliable on busybox where killall sometimes
+	# misses processes shown as {name} in ps).
+	local p
+	for f in "$PID_WATCHDOG" "$PID_SCANNER"; do
+		[ -f "$f" ] || continue
+		p="$(cat "$f" 2>/dev/null)"
+		[ -n "$p" ] && kill "$p" 2>/dev/null
+	done
+
+	# Kill all instances by name as a backstop.
 	killall pw2watchdog.sh pw2watchdog-scanner.sh 2>/dev/null
 	sleep 2
-	# Force kill if still running
+
+	# Force kill anything still running.
+	for f in "$PID_WATCHDOG" "$PID_SCANNER"; do
+		[ -f "$f" ] || continue
+		p="$(cat "$f" 2>/dev/null)"
+		[ -n "$p" ] && kill -9 "$p" 2>/dev/null
+	done
 	killall -9 pw2watchdog.sh pw2watchdog-scanner.sh 2>/dev/null
-	# Clean up pid files
-	rm -f "$PID_WATCHDOG" "$PID_SCANNER"
+
+	# Clean up pid files AND the daemon lock (otherwise next start hangs in
+	# acquire_lock waiting for the dead process to release it).
+	rm -f "$PID_WATCHDOG" "$PID_SCANNER" /var/run/pw2watchdog/pw2watchdog.lock
 }
 
 restart() {

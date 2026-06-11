@@ -79,10 +79,20 @@ load_env() {
 # ---------------------------------------------------------------------------
 # Locking
 # ---------------------------------------------------------------------------
+# Stale-lock-aware. If the lock file exists but the PID inside is dead
+# (process gone or never existed), remove the lock immediately instead of
+# waiting the full timeout. This fixes the hang that happens when a previous
+# daemon was killed (e.g. by init.d stop / killall -9) without releasing.
 acquire_lock() {
-	local timeout=300 waited=0
+	local timeout=30 waited=0 owner
 	while [ -f "$LOCK_FILE" ]; do
-		[ "$waited" -ge "$timeout" ] && { log "lock timeout, forcing"; break; }
+		owner="$(cat "$LOCK_FILE" 2>/dev/null)"
+		if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+			log "stale lock (pid=$owner not running) — removing"
+			rm -f "$LOCK_FILE"
+			break
+		fi
+		[ "$waited" -ge "$timeout" ] && { log "lock timeout (held by pid=$owner), forcing"; rm -f "$LOCK_FILE"; break; }
 		sleep 1
 		waited=$((waited + 1))
 	done
