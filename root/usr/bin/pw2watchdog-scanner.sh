@@ -214,11 +214,17 @@ rotate_candidates_if_auto() {
 run_scan() {
 	load_cfg
 	acquire_lock
-	trap "release_lock" EXIT INT TERM
 
 	local ts_start
 	ts_start="$(date +%s)"
 	log "scan started (node_selection=${NODE_SELECTION:-auto})"
+
+	# C9.2: write a marker file the LuCI overview polls to show the
+	# "Node measurement in progress" banner. Removed when scan completes
+	# (or on EXIT trap below) so the banner doesn't stick if scanner crashes.
+	SCAN_MARKER="$(dirname "$STATE_FILE")/scan.in_progress"
+	echo "$ts_start" > "$SCAN_MARKER" 2>/dev/null
+	trap "rm -f \"$SCAN_MARKER\" 2>/dev/null; release_lock" EXIT INT TERM
 
 	local tmp_cache="${CACHE_FILE}.tmp"
 	printf '{\n' > "$tmp_cache"
@@ -262,6 +268,9 @@ run_scan() {
 	ts_end="$(date +%s)"
 	elapsed=$((ts_end - ts_start))
 	log "scan completed in ${elapsed}s"
+
+	# C9.2: clear the in-progress marker. EXIT trap below is the safety net.
+	rm -f "$SCAN_MARKER" 2>/dev/null
 
 	# Persist last scan timestamp for Overview page
 	if [ -f "$STATE_FILE" ]; then

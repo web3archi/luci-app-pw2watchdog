@@ -33,11 +33,15 @@ function renderRunningBanner() {
 }
 
 function startRunningPoller(bannerEl) {
+	// C9.2: show the banner only while a scan is actually running.
+	// scanner.sh creates /var/run/pw2watchdog/scan.in_progress at scan start
+	// and removes it (including via EXIT trap on crash) at scan end.
+	// Previously this polled status.json's `running` flag, which after C8b
+	// stays "true" the whole time the daemon is alive — so the banner spun
+	// forever even when no scan was actually in progress.
 	function poll() {
-		fs.read('/var/run/pw2watchdog/status.json').then(function(raw) {
-			var st = {};
-			try { st = JSON.parse(raw || '{}'); } catch(e) {}
-			bannerEl.style.display = (st.running === 'true' || st.running === true) ? '' : 'none';
+		fs.stat('/var/run/pw2watchdog/scan.in_progress').then(function() {
+			bannerEl.style.display = '';
 		}, function() {
 			bannerEl.style.display = 'none';
 		}).then(function() { setTimeout(poll, 3000); });
