@@ -156,8 +156,67 @@
 <script>
 (function() {
 	'use strict';
-	var ENDPOINT = '/cgi-bin/pw2health';
-	var REFRESH_MS = 5000;
+	var ENDPOINT       = '/cgi-bin/pw2health';
+	var LIVE_ENDPOINT  = '/cgi-bin/pw2live';
+	var REFRESH_MS     = 5000;
+
+	/* ── Live probe state ────────────────────────────────────────────────
+	 * __pw2live holds the most recent JSON from /cgi-bin/pw2live.
+	 * Until the first probe returns, __pw2live_pending stays true and we
+	 * paint a yellow "Probing…" badge instead of stale status_json data.
+	 * The probe runs on an adaptive timer:
+	 *   • 3s  while last_switch / last_pw2_restart < 90s (post-rotation)
+	 *   • 30s when document.hidden
+	 *   • 15s after 3 consecutive errors
+	 *   • 5s  otherwise.
+	 * Activity hints are refreshed on every status_json fetch via tick().
+	 */
+	var __pw2live           = null;
+	var __pw2live_pending   = true;
+	var __pw2live_hint      = { last_switch: 0, last_pw2_restart: 0 };
+	var __pw2live_errStreak = 0;
+	var __pw2live_timer     = null;
+
+	function pickLiveInterval() {
+		var now = Math.floor(Date.now() / 1000);
+		var ls  = Number(__pw2live_hint.last_switch || 0);
+		var lr  = Number(__pw2live_hint.last_pw2_restart || 0);
+		var fresh = Math.max(ls, lr);
+		if (fresh > 0 && (now - fresh) < 90) return 3000;
+		if (document.hidden) return 30000;
+		if (__pw2live_errStreak >= 3) return 15000;
+		return 5000;
+	}
+
+	function probeOnce() {
+		fetch(LIVE_ENDPOINT, { cache: 'no-store' })
+			.then(function(r) {
+				if (!r.ok) throw new Error('HTTP ' + r.status);
+				return r.json();
+			})
+			.then(function(j) {
+				__pw2live = j;
+				__pw2live.received_at = Math.floor(Date.now() / 1000);
+				__pw2live_pending  = false;
+				__pw2live_errStreak = 0;
+			})
+			.catch(function() {
+				__pw2live_errStreak++;
+				/* keep last good __pw2live; pickProxyStatus tolerates staleness */
+			})
+			.then(function() {
+				if (__pw2live_timer !== null) clearTimeout(__pw2live_timer);
+				__pw2live_timer = setTimeout(probeOnce, pickLiveInterval());
+			});
+	}
+
+	document.addEventListener('visibilitychange', function() {
+		if (!document.hidden) {
+			/* Re-arm immediately when user comes back to the tab. */
+			if (__pw2live_timer !== null) clearTimeout(__pw2live_timer);
+			probeOnce();
+		}
+	});
 
 	function el(tag, attrs, kids) {
 		var e = document.createElement(tag);
@@ -207,6 +266,22 @@
 		var alive = s.passwall_alive || '';
 		var fb   = s.fallback_action || 'blackhole';
 
+		/* ── Live-probe override ──────────────────────────────────────
+		 * Prefer the browser-side probe when fresh (<10s).
+		 * Eliminates phase-shift between status_json (refreshed every 120s
+		 * by the daemon) and the actual proxy state.
+		 */
+		if (__pw2live_pending) {
+			return ['\u{1F7E1} Probing\u2026', 'warn'];
+		}
+		if (__pw2live && Number(__pw2live.received_at || 0) > 0
+				&& (now - Number(__pw2live.received_at)) <= 10) {
+			var lst = __pw2live.state || '';
+			if (lst) { st = lst; }
+			if (__pw2live.ip)         { ip   = __pw2live.ip; }
+			if (__pw2live.node_label) { node = __pw2live.node_label; }
+		}
+
 		if (alive === 'false')                  return ['\u{1F534} Proxy engine not running',     'danger'];
 		if (en !== '1')                         return ['Check disabled',                        'neutral'];
 		if (!pw)                                return ['No node configured',                    'neutral'];
@@ -238,6 +313,13 @@
 		var pwLabel = s.passwall_default_label || s.current_label || s.passwall_default_node || '-';
 		var rxIp    = s.proxy_check_ip || '';
 		var rxNode  = s.proxy_check_node_label || '';
+		/* Prefer live-probe IP/node when fresh, so the subline matches the badge. */
+		var nowSec_ = Math.floor(Date.now() / 1000);
+		if (__pw2live && Number(__pw2live.received_at || 0) > 0
+				&& (nowSec_ - Number(__pw2live.received_at)) <= 10) {
+			if (__pw2live.ip)         { rxIp   = __pw2live.ip; }
+			if (__pw2live.node_label) { rxNode = __pw2live.node_label; }
+		}
 		var lastSw  = fmtTs(s.last_switch);
 		var lastTgt = s.last_target_label || s.last_target || '';
 		var hDrops    = Number(s.health_drops            || 0);
@@ -354,12 +436,22 @@
 				if (!r.ok) throw new Error('HTTP ' + r.status);
 				return r.json();
 			})
-			.then(render)
+			.then(function(s) {
+				/* Refresh live-probe activity hint so adaptive timer can
+				 * switch to 3s right after a node switch / pw2 restart. */
+				__pw2live_hint = {
+					last_switch:      Number(s.last_switch || 0),
+					last_pw2_restart: Number(s.last_pw2_restart || 0)
+				};
+				render(s);
+			})
 			.catch(function(e) { renderError(e.message || String(e)); });
 	}
 
 	tick();
 	setInterval(tick, REFRESH_MS);
+	/* Kick off the live-probe loop independently. */
+	probeOnce();
 })();
 </script>
 </body>

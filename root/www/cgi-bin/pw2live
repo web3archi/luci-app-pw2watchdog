@@ -1,0 +1,112 @@
+#!/bin/sh
+# pw2live — on-demand live proxy probe endpoint (C9.7).
+#
+# Unlike /cgi-bin/pw2health which returns the last status.json snapshot
+# (potentially 2 minutes stale), this endpoint performs a fresh probe
+# right now and returns the result. Used by overview.js / pw2widget.html
+# adaptive pollers (3s in activity windows, 5s on active tab, 30s hidden).
+#
+# Probe = curl through xray SOCKS5 on 127.0.0.1:1070 to a lightweight
+# external endpoint that returns the proxy outbound IP. We do NOT write
+# anything (no state mutation, no history append, no counter changes) —
+# this is purely a read of "is the proxy working right now".
+#
+# Response JSON:
+#   ok=1     proxy works: ip is the outbound IPv4, node_label matched (if any)
+#   ok=0     proxy is not answering: state is "down" with reason
+#
+# Errors are always 200 OK with ok=0 so JS doesn't have to handle HTTP codes.
+
+PROBE_URL='https://1.1.1.1/cdn-cgi/trace'
+PROBE_PORT='1070'
+PROBE_TIMEOUT='3'
+STATUS_FILE='/var/run/pw2watchdog/status.json'
+PW2_CONFIG='passwall2'
+
+# Optional: allow override via UCI if user changed proxy_check_url / port.
+if [ -f /etc/config/pw2watchdog ]; then
+	cfg_url="$(uci -q get pw2watchdog.advanced.proxy_check_url 2>/dev/null)"
+	[ -n "$cfg_url" ] && PROBE_URL="$cfg_url"
+	cfg_port="$(uci -q get pw2watchdog.connectivity.port 2>/dev/null)"
+	[ -n "$cfg_port" ] && PROBE_PORT="$cfg_port"
+fi
+
+printf 'Content-Type: application/json; charset=utf-8\r\n'
+printf 'Cache-Control: no-store, no-cache, must-revalidate\r\n'
+printf 'Access-Control-Allow-Origin: *\r\n'
+printf '\r\n'
+
+# Time the probe (busybox date supports +%s%3N? — fall back to whole seconds)
+ts_start_ms=$(date +%s%3N 2>/dev/null)
+case "$ts_start_ms" in
+	*N) ts_start_ms=$(( $(date +%s) * 1000 )) ;;
+esac
+
+# Run probe through SOCKS5
+raw="$(curl -s --max-time "$PROBE_TIMEOUT" --retry 0 \
+	-x "socks5://127.0.0.1:${PROBE_PORT}" "$PROBE_URL" 2>/dev/null)"
+curl_rc=$?
+
+ts_end_ms=$(date +%s%3N 2>/dev/null)
+case "$ts_end_ms" in
+	*N) ts_end_ms=$(( $(date +%s) * 1000 )) ;;
+esac
+elapsed_ms=$(( ts_end_ms - ts_start_ms ))
+[ "$elapsed_ms" -lt 0 ] && elapsed_ms=0
+
+now_s=$(date +%s)
+
+# Parse: if response has 'ip=<addr>' line (cdn-cgi/trace format) take it,
+# else treat entire body as raw IP.
+ext_ip=""
+if echo "$raw" | grep -q '^ip='; then
+	ext_ip="$(echo "$raw" | awk -F= '/^ip=/{print $2; exit}' | tr -d '[:space:]')"
+else
+	ext_ip="$(echo "$raw" | tr -d '[:space:]')"
+fi
+
+# Validate IP shape (numeric+dot or hex+colon)
+case "$ext_ip" in
+	''|*[!0-9.:]*) ext_ip="" ;;
+esac
+
+if [ -z "$ext_ip" ]; then
+	# Diagnose why: xray dead? port closed? timeout?
+	reason="no_response"
+	xray_alive=0
+	pgrep -x xray >/dev/null 2>&1 && xray_alive=1
+	port_listen=0
+	netstat -tln 2>/dev/null | grep -q ":${PROBE_PORT} " && port_listen=1
+
+	if [ "$xray_alive" -eq 0 ]; then
+		reason="xray_not_running"
+	elif [ "$port_listen" -eq 0 ]; then
+		reason="socks_port_closed"
+	elif [ "$curl_rc" -eq 28 ]; then
+		reason="timeout"
+	else
+		reason="curl_rc_${curl_rc}"
+	fi
+
+	printf '{"ok":0,"state":"down","reason":"%s","xray_alive":%d,"port_listen":%d,"elapsed_ms":%d,"ts":%d}\n' \
+		"$reason" "$xray_alive" "$port_listen" "$elapsed_ms" "$now_s"
+	exit 0
+fi
+
+# Try to match IP against a passwall2 node (so UI can show "🇫🇮 Финляндия")
+node_label=""
+for sec in $(uci show "$PW2_CONFIG" 2>/dev/null \
+	| awk -F= '/\.address=/{gsub(/\.address$/,"",$1); split($1,a,"."); print a[2]}'); do
+	addr="$(uci -q get "${PW2_CONFIG}.${sec}.address" 2>/dev/null)"
+	[ "$addr" = "$ext_ip" ] || continue
+	node_label="$(uci -q get "${PW2_CONFIG}.${sec}.remarks" 2>/dev/null)"
+	[ -z "$node_label" ] && node_label="$sec"
+	break
+done
+
+# JSON-escape node_label minimally (escape backslash and double-quote).
+esc_label="$(printf '%s' "$node_label" \
+	| sed 's/\\/\\\\/g; s/"/\\"/g')"
+
+printf '{"ok":1,"state":"proxy_ok","ip":"%s","node_label":"%s","elapsed_ms":%d,"ts":%d}\n' \
+	"$ext_ip" "$esc_label" "$elapsed_ms" "$now_s"

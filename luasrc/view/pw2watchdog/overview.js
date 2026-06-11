@@ -50,6 +50,74 @@ function startRunningPoller(bannerEl) {
 }
 
 /* ------------------------------------------------------------------ *
+ *  C9.7 Live probe poller — adaptive frequency.
+ *
+ *  Polls /cgi-bin/pw2live and writes the latest result to
+ *  window.__pw2live so renderHealthOverview() can prefer it over the
+ *  potentially-stale status.json snapshot.
+ *
+ *  Interval logic (in order of priority):
+ *    • 3s   if recent activity: last_switch / last_pw2_restart < 90s
+ *           OR scan.in_progress marker exists
+ *    • 30s  if document.hidden (tab in background)
+ *    • 15s  backoff after 3 consecutive probe errors
+ *    • 5s   otherwise (normal active tab)
+ * ------------------------------------------------------------------ */
+function startLiveProbe() {
+	window.__pw2live_pending = true;     /* first probe is in-flight */
+	var errStreak = 0;
+
+	function pickInterval() {
+		/* recent-activity window: read freshest status fields if available */
+		var nowSec = Math.floor(Date.now() / 1000);
+		var st = window.__pw2live_status_hint || {};
+		var ls = Number(st.last_switch || 0);
+		var lr = Number(st.last_pw2_restart || 0);
+		var scanInProgress = (window.__pw2live_scan_in_progress === true);
+		var recent = scanInProgress
+			|| (ls > 0 && (nowSec - ls) < 90)
+			|| (lr > 0 && (nowSec - lr) < 90);
+		if (recent)                  return 3000;
+		if (document.hidden)         return 30000;
+		if (errStreak >= 3)          return 15000;
+		return 5000;
+	}
+
+	function probe() {
+		fetch('/cgi-bin/pw2live', { cache: 'no-store' })
+			.then(function(r) {
+				if (!r.ok) throw new Error('http ' + r.status);
+				return r.json();
+			})
+			.then(function(j) {
+				window.__pw2live = j;
+				window.__pw2live_pending = false;
+				errStreak = (Number(j.ok) === 1) ? 0 : (errStreak + 1);
+			})
+			.catch(function() {
+				errStreak += 1;
+				/* Don't clear __pw2live — keep last known good for up to 10s window */
+			})
+			.then(function() {
+				setTimeout(probe, pickInterval());
+			});
+	}
+
+	/* Cheap side-channel poller that updates the scan_in_progress hint without
+	 * doing a full live probe — keeps adaptive interval logic responsive. */
+	function sidePoll() {
+		fs.stat('/var/run/pw2watchdog/scan.in_progress').then(function() {
+			window.__pw2live_scan_in_progress = true;
+		}, function() {
+			window.__pw2live_scan_in_progress = false;
+		}).then(function() { setTimeout(sidePoll, 5000); });
+	}
+
+	probe();
+	sidePoll();
+}
+
+/* ------------------------------------------------------------------ *
  *  Excess candidates banner (manual mode only)
  * ------------------------------------------------------------------ */
 function renderExcessBanner(currentCount, recommendedCount) {
@@ -376,6 +444,34 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 	var proxyIp      = status.proxy_check_ip         || '';
 	var proxyNode    = status.proxy_check_node_label || '';
 	var proxyTs      = Number(status.proxy_check_ts  || 0);
+
+	/* C9.7: live-probe override.
+	 * If we have a recent (<10s) live probe result from /cgi-bin/pw2live,
+	 * use it instead of the up-to-2-min-stale status.json snapshot.
+	 * window.__pw2live is populated by startLiveProbe() in view(). */
+	var liveProbeActive = false;
+	var liveProbeProbing = false;
+	try {
+		var lp = window.__pw2live;
+		var nowSecForLive = Math.floor(Date.now() / 1000);
+		if (lp && lp.ts && (nowSecForLive - Number(lp.ts)) < 10) {
+			liveProbeActive = true;
+			if (Number(lp.ok) === 1) {
+				proxyState = 'proxy_ok';
+				proxyIp    = lp.ip || '';
+				proxyNode  = lp.node_label || '';
+				proxyTs    = Number(lp.ts);
+			} else {
+				proxyState = 'proxy_down';
+				proxyIp    = '';
+				proxyNode  = '';
+				proxyTs    = Number(lp.ts);
+			}
+		} else if (window.__pw2live_pending === true) {
+			/* First probe not back yet — show "Probing…" instead of stale value */
+			liveProbeProbing = true;
+		}
+	} catch (_e) { /* ignore */ }
 	var pwAlive      = status.passwall_alive         || '';
 	var pwRunning    = status.passwall_running       || '';
 	var connEnabled  = status.conn_check_enabled     || '0';
@@ -429,7 +525,10 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 
 	/* Row 3: Proxy status — unified human-readable state. */
 	var proxyHuman, proxyAlertClass;
-	if (pwAlive === 'false') {
+	if (liveProbeProbing) {
+		/* C9.7: explicit "Probing…" while first live probe is in flight */
+		proxyHuman = '\u{1F7E1} ' + _('Probing\u2026');             proxyAlertClass = 'alert-message warning';
+	} else if (pwAlive === 'false') {
 		proxyHuman = '\u{1F534} ' + _('Proxy engine not running');  proxyAlertClass = 'alert-message danger';
 	} else if (proxyEnabled !== '1') {
 		proxyHuman = _('Check disabled');                           proxyAlertClass = 'alert-message';
@@ -882,6 +981,12 @@ return view.extend({
 			]).then(function(res) {
 				var obj = {};
 				try { obj = JSON.parse(res[0] || '{}'); } catch(e) {}
+				/* Update live-probe activity hint so adaptive poller can switch
+				 * to 3s interval right after switch/pw2_restart. */
+				window.__pw2live_status_hint = {
+					last_switch:      Number(obj.last_switch || 0),
+					last_pw2_restart: Number(obj.last_pw2_restart || 0)
+				};
 				try { subData = JSON.parse(res[3] || '{}'); } catch(e) {}
 				currentHistoryItems = parseHistory(res[1] || '');
 				/* Recompute lastScanTs from cache (more reliable than state) */
@@ -983,6 +1088,14 @@ return view.extend({
 		renderRuntime(status);
 		renderHistory(historyItems);
 		healthEl.appendChild(renderHealthOverview(status, nodeIndex));
+		/* Seed live-probe activity hint from initial status. */
+		window.__pw2live_status_hint = {
+			last_switch:      Number(status.last_switch || 0),
+			last_pw2_restart: Number(status.last_pw2_restart || 0)
+		};
+		/* Start independent live-probe poller (calls /cgi-bin/pw2live).
+		 * Updates window.__pw2live; renderHealthOverview prefers it when fresh. */
+		startLiveProbe();
 		window.setInterval(function() {
 			refreshAll().then(function() { updateSaveBtn(); });
 		}, 5000);
