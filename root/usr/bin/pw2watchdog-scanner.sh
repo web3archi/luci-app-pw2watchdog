@@ -222,7 +222,9 @@ run_scan() {
 	# C9.2: write a marker file the LuCI overview polls to show the
 	# "Node measurement in progress" banner. Removed when scan completes
 	# (or on EXIT trap below) so the banner doesn't stick if scanner crashes.
-	SCAN_MARKER="$(dirname "$STATE_FILE")/scan.in_progress"
+	# Use STATE_DIR directly — scanner doesn't define STATE_FILE so an earlier
+	# `dirname "$STATE_FILE"` resolved to '.' and the marker landed in /root.
+	SCAN_MARKER="${STATE_DIR}/scan.in_progress"
 	echo "$ts_start" > "$SCAN_MARKER" 2>/dev/null
 	trap "rm -f \"$SCAN_MARKER\" 2>/dev/null; release_lock" EXIT INT TERM
 
