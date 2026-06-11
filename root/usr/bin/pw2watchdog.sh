@@ -1847,6 +1847,25 @@ daemon_loop() {
 	load_env
 	load_cfg
 	_cleanup_stale_drops
+
+	# C8e: immediate proxy check at boot so UI shows real status from second 1
+	# instead of "Pending check" until the first run_once iteration completes.
+	# We force LAST_PROXY_CHECK_TS=0 once to bypass the interval guard for
+	# the very first probe; save_state right after persists the new TS.
+	load_state
+	STATUS_RUNNING="true"
+	LAST_PROXY_CHECK_TS=0
+	if [ "${PROXY_CHECK_ENABLED:-0}" = "1" ]; then
+		_check_proxy_connection
+		save_state
+		# Write a status snapshot so the UI/widget sees proxy_check_*
+		# fields without waiting for the first full run_once cycle.
+		local _boot_current
+		_boot_current="$(get_default_node 2>/dev/null || echo '')"
+		write_status "$_boot_current" "" "" "running" ""
+		log "daemon_loop: boot proxy_check done state=${PROXY_CHECK_STATE} ip=${PROXY_CHECK_IP}"
+	fi
+
 	while true; do
 		run_once
 		load_cfg
