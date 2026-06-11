@@ -261,25 +261,24 @@
 			el('td', { 'class': 'val' }, el('span', { 'class': 'badge ' + wdSt[1] }, wdSt[0]))
 		]));
 
-		// Main Row 3: Proxy status
+		// Main Row 3: Proxy status (badge + subline with real exit IP/country)
+		var proxyValCell = el('td', { 'class': 'val' });
+		proxyValCell.appendChild(el('span', { 'class': 'badge ' + prSt[1] }, prSt[0]));
+		if (rxIp) {
+			var exitText = rxNode ? (rxNode + ' — ' + rxIp) : rxIp;
+			proxyValCell.appendChild(el('div',
+				{ 'style': 'margin-top:4px;font-size:0.92em;color:#999;' },
+				exitText));
+		}
 		rows.push(el('tr', null, [
 			el('td', { 'class': 'lbl' }, 'Proxy status'),
-			el('td', { 'class': 'val' }, el('span', { 'class': 'badge ' + prSt[1] }, prSt[0]))
+			proxyValCell
 		]));
 
 		var mainTbl = el('table', null, rows);
 
-		// Mismatch warning: configured node vs real exit
+		// Mismatch warning disabled — real exit country now visible inline above.
 		var mismatch = null;
-		var pwNode = s.passwall_default_node || '';
-		if (pwNode && s.proxy_check_state === 'proxy_ok' && rxIp && rxNode &&
-		    pwLabel && rxNode && pwLabel.trim() !== rxNode.trim() &&
-		    Number(s.last_switch || 0) > 0 &&
-		    (Math.floor(Date.now() / 1000) - Number(s.last_switch)) >= 90) {
-			mismatch = el('div', { 'class': 'warn-line' },
-				'Configured node and real exit do not match — see Details below.'
-			);
-		}
 
 		// Details: Last proxy check + Last node switch + 3 counters
 		function counterCell(count, lastTs, severity) {
