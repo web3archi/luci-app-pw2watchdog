@@ -454,18 +454,22 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 	try {
 		var lp = window.__pw2live;
 		var nowSecForLive = Math.floor(Date.now() / 1000);
-		if (lp && lp.ts && (nowSecForLive - Number(lp.ts)) < 10) {
+		/* Use received_at (client clock) instead of lp.ts (router clock):
+		 * ramips often runs without NTP sync, so router clock drifts.
+		 * Window widened to 15s to cover one probe interval + jitter. */
+		var liveAge = (lp && lp.received_at) ? (nowSecForLive - Number(lp.received_at)) : 9999;
+		if (lp && liveAge < 15) {
 			liveProbeActive = true;
 			if (Number(lp.ok) === 1) {
 				proxyState = 'proxy_ok';
 				proxyIp    = lp.ip || '';
 				proxyNode  = lp.node_label || '';
-				proxyTs    = Number(lp.ts);
+				proxyTs    = Number(lp.received_at);
 			} else {
 				proxyState = 'proxy_down';
 				proxyIp    = '';
 				proxyNode  = '';
-				proxyTs    = Number(lp.ts);
+				proxyTs    = Number(lp.received_at);
 			}
 		} else if (window.__pw2live_pending === true) {
 			/* First probe not back yet — show "Probing…" instead of stale value */
