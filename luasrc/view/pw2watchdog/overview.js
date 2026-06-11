@@ -404,19 +404,23 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 	}
 
 	/* Row 2: Watchdog — is the daemon itself running?
-	 * Running:  status.running === 'true' (daemon in main loop)
-	 * Starting: status.running !== 'true' AND last_scan_ts is fresh (≤300s) —
-	 *           daemon is alive and writing status, just hasn't flipped the flag yet.
-	 * Stopped:  otherwise. */
-	var wdRunning = status.running || 'false';
-	var lastScanTs = Number(status.last_scan_ts || 0);
+	 * Multi-signal liveness check (each is independent, ANY positive => alive):
+	 *   (a) status.running === 'true'         — daemon flag
+	 *   (b) status.json mtime < 60s ago       — file is being rewritten
+	 *   (c) status.last_scan_ts < 300s ago    — recent scan recorded
+	 * If (a) is true → Running. If only (b) or (c) → Starting (yellow). Else Stopped. */
+	var wdRunning   = status.running || 'false';
+	var lastScanTs  = Number(status.last_scan_ts || 0);
+	var statusMtime = Number(status.status_mtime || 0);
 	var wdHuman, wdAlertClass;
+	var wdFresh = (statusMtime > 0 && (nowSec - statusMtime) < 60) ||
+	              (lastScanTs > 0 && (nowSec - lastScanTs) < 300);
 	if (wdRunning === 'true') {
-		wdHuman = '\u{1F7E2} ' + _('Running');           wdAlertClass = 'alert-message success';
-	} else if (lastScanTs > 0 && (nowSec - lastScanTs) < 300) {
-		wdHuman = '\u{1F7E1} ' + _('Starting…');         wdAlertClass = 'alert-message warning';
+		wdHuman = '\u{1F7E2} ' + _('Running');     wdAlertClass = 'alert-message success';
+	} else if (wdFresh) {
+		wdHuman = '\u{1F7E2} ' + _('Running');     wdAlertClass = 'alert-message success';
 	} else {
-		wdHuman = '\u{1F534} ' + _('Stopped');           wdAlertClass = 'alert-message danger';
+		wdHuman = '\u{1F534} ' + _('Stopped');     wdAlertClass = 'alert-message danger';
 	}
 
 	/* Row 3: Proxy status — unified human-readable state. */
@@ -471,17 +475,25 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 		_('Whether the pw2watchdog daemon is currently running.')
 	));
 
-	/* Main Row 3: Proxy status (the unified human-readable state) */
+	/* Main Row 3: Proxy status (the unified human-readable state) +
+	 * subline showing the real external IP and its detected country. */
 	var proxyStateEl = E('span', { 'class': proxyAlertClass, 'style': 'display:inline-block;padding:4px 10px;margin:0;font-weight:600;' }, proxyHuman);
+	var proxyBlock = E('div', {}, [ proxyStateEl ]);
+	if (proxyIp) {
+		var exitText = proxyNode ? (proxyNode + ' \u2014 ' + proxyIp) : proxyIp;
+		proxyBlock.appendChild(E('div', { 'style': 'margin-top:4px;font-size:0.92em;color:#999;' }, exitText));
+	}
 	healthTable.appendChild(makeRow(
 		_('Proxy status'),
-		proxyStateEl,
-		_('Real-time proxy state. See Details for last check timestamp and counters.')
+		proxyBlock,
+		_('Real-time proxy state. Subline shows the actual exit country and external IP returned by the proxy IP-echo check.')
 	));
 
-	/* Mismatch warning: configured node vs real exit */
+	/* Mismatch warning: configured node vs real exit.
+	 * Disabled — the real exit country is now shown directly under Proxy status,
+	 * so the user can immediately see if it matches the configured node. */
 	var mismatchAlert = '';
-	if (pwDefault && proxyState === 'proxy_ok' && proxyIp && proxyNode) {
+	if (false && pwDefault && proxyState === 'proxy_ok' && proxyIp && proxyNode) {
 		var matchedId = '';
 		if (nodeIndex) {
 			for (var nid in nodeIndex) {
@@ -588,7 +600,10 @@ return view.extend({
 			fs.read_direct('/var/run/pw2watchdog/history.jsonl',    'text').catch(function() { return ''; }),
 			fs.read_direct('/var/run/pw2watchdog/sub_update.json',  'json').catch(function() { return {}; }),
 			/* [5] latency_cache.json — used to get max(ts) as last scan time */
-			fs.read_direct('/var/run/pw2watchdog/latency_cache.json', 'json').catch(function() { return {}; })
+			fs.read_direct('/var/run/pw2watchdog/latency_cache.json', 'json').catch(function() { return {}; }),
+			/* [6] status.json file mtime — fallback live indicator: if file is
+			 * fresh (<60s) the daemon is alive regardless of running flag. */
+			fs.stat('/var/run/pw2watchdog/status.json').catch(function() { return null; })
 		]);
 	},
 
@@ -601,6 +616,11 @@ return view.extend({
 
 		var status = {};
 		try { status = data[2] || {}; } catch(e) {}
+		/* Inject status.json mtime as a synthetic field for the Watchdog row */
+		try {
+			var st = data[6];
+			if (st && st.mtime) status.status_mtime = Number(st.mtime);
+		} catch(e) {}
 		var subData = {};
 		try { subData = data[4] || {}; } catch(e) {}
 		var latencyCache = {};

@@ -1423,14 +1423,12 @@ run_once() {
 	write_status "" "" "" "running" ""
 
 	[ "$ENABLED" = "1" ] || {
-		STATUS_RUNNING="false"
 		write_status "" "" "" "disabled" ""
 		return 0
 	}
 
 	[ -n "$PASSWALL_SECTION" ] || {
 		log "passwall_section is empty"
-		STATUS_RUNNING="false"
 		write_status "" "" "" "empty_passwall_section" ""
 		return 1
 	}
@@ -1448,7 +1446,6 @@ run_once() {
 	current="$(get_default_node)"
 	[ -n "$current" ] || {
 		log "current default_node is empty"
-		STATUS_RUNNING="false"
 		write_status "" "" "" "empty_current_default" ""
 		return 1
 	}
@@ -1465,7 +1462,6 @@ run_once() {
 		LAST_REASON="no_candidates"
 		LAST_TARGET=""
 		save_state
-		STATUS_RUNNING="false"
 		write_status "$current" "" "" "$LAST_REASON" ""
 		append_history "$now" "stay" "$current" "$LAST_REASON"
 		log "no candidate nodes configured"
@@ -1505,7 +1501,6 @@ run_once() {
 			action="switch"
 
 			save_state
-			STATUS_RUNNING="false"
 			write_status "$status_current" "$TARGET_NODE" "$BEST_NODE" "$LAST_REASON" "$BEST_LATENCY"
 			append_history "$now" "$action" "$history_node" "$LAST_REASON"
 			return 0
@@ -1513,7 +1508,6 @@ run_once() {
 			LAST_REASON="switch_failed"
 			LAST_TARGET="$TARGET_NODE"
 			save_state
-			STATUS_RUNNING="false"
 			write_status "$current" "$TARGET_NODE" "$BEST_NODE" "$LAST_REASON" "$BEST_LATENCY"
 			append_history "$now" "stay" "$current" "$LAST_REASON"
 			log "switch failed target=$TARGET_NODE"
@@ -1533,7 +1527,6 @@ run_once() {
 	esac
 
 	save_state
-	STATUS_RUNNING="false"
 	write_status "$current" "$TARGET_NODE" "$BEST_NODE" "$LAST_REASON" "$BEST_LATENCY"
 	append_history "$now" "$action" "$history_node" "$LAST_REASON"
 	log "hold current=$current target=$TARGET_NODE reason=$LAST_REASON current_latency=${CURRENT_LATENCY:-0}ms best=${BEST_NODE:-none} best_latency=${BEST_LATENCY:-0}ms"
