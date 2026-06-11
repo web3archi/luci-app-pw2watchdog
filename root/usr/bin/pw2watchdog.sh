@@ -816,14 +816,38 @@ _restart_plain() {
 # Restart with Transit Blackhole
 _restart_with_blackhole() {
 	local handle nft_table nft_chain wait_timeout=60
+	local nft_err insert_rc attempt
 	nft_table="$PW2_NFTABLE_NAME"
 	nft_chain="$PW2_NFTCHAIN_MANGLE"
 
-	# 1. Insert DROP as the first rule in the mangle chain
-	#    counter — for diagnostics, position 0 — first
-	nft insert rule $nft_table "$nft_chain" counter drop 2>/dev/null
-	if [ $? -ne 0 ]; then
-		log "transit blackhole: failed to insert drop rule, falling back to plain restart"
+	# C9.1: pre-check that the table/chain actually exist before inserting.
+	# If PassWall2 already went down (after subscription update / node change),
+	# the nft table may be missing — there is no point in retrying then, the
+	# chain is gone and we must fall back to plain restart so PW2 recreates it.
+	if ! nft list chain $nft_table "$nft_chain" >/dev/null 2>&1; then
+		log "transit blackhole: chain '$nft_chain' missing in table '$nft_table' \
+(PassWall2 already down?) — falling back to plain restart"
+		_restart_plain
+		return $?
+	fi
+
+	# 1. Insert DROP as the first rule in the mangle chain.
+	#    counter — for diagnostics, position 0 — first.
+	#    Retry up to 3 times with 200ms backoff to ride out micro-windows
+	#    when PW2 is rebuilding the chain in parallel.
+	insert_rc=1
+	attempt=0
+	while [ $attempt -lt 3 ]; do
+		nft_err="$(nft insert rule $nft_table "$nft_chain" counter drop 2>&1)"
+		insert_rc=$?
+		[ $insert_rc -eq 0 ] && break
+		attempt=$(( attempt + 1 ))
+		log "transit blackhole: insert attempt $attempt failed rc=$insert_rc nft=\"$nft_err\""
+		# No backoff sleep — every ms here is leaked traffic. busybox `usleep`
+		# is not guaranteed; we trust the pre-check above + just retry fast.
+	done
+	if [ $insert_rc -ne 0 ]; then
+		log "transit blackhole: failed to insert drop rule after 3 attempts (nft: \"$nft_err\"), falling back to plain restart"
 		_restart_plain
 		return $?
 	fi
