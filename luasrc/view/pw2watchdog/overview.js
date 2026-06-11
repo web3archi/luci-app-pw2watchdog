@@ -439,6 +439,8 @@ function renderHealthOverview(status, nodeIndex, detailsOpen) {
 		proxyHuman = '\u{1F534} ' + _('Blocked (killswitch active)'); proxyAlertClass = 'alert-message danger';
 	} else if (proxyState === 'proxy_no_204') {
 		proxyHuman = '\u{1F534} ' + _('Proxy unreachable');         proxyAlertClass = 'alert-message danger';
+	} else if (proxyState === 'proxy_down') {
+		proxyHuman = '\u{1F534} ' + _('Proxy engine not running');  proxyAlertClass = 'alert-message danger';
 	} else if (proxyState === 'direct') {
 		/* Leaking direct — yellow if intentional (fallback=direct), red otherwise */
 		if (fallbackAction === 'direct') {

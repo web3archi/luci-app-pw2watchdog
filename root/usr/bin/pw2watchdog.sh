@@ -1756,35 +1756,47 @@ _check_proxy_connection() {
 	# Direct detection is done via DIRECT_IP_RANGES (user-configured CIDR list).
 	local wan_ip=""
 
-	# Fetch external IP from check URL
+	# Fetch external IP from check URL.
+	#
+	# C9.4: explicitly route through xray SOCKS5 on 127.0.0.1:1070 instead of
+	# relying on TPROXY interception of a plain curl. Previously, during brief
+	# TPROXY rebuild gaps (PW2 internal reload, node switch), the plain curl
+	# would slip out through WAN and return the router's real IP, getting
+	# classified as a 'direct leak'. With explicit -x:
+	#   * xray running   → ext_ip is real proxy exit IP → proxy_ok
+	#   * xray missing   → curl gets connection refused → PROXY_DOWN (drop)
+	#   * proxy hung     → curl times out             → PROXY_DOWN (drop)
+	# We can no longer leak through WAN by design.
 	local check_url="${PROXY_CHECK_URL:-https://api.ipify.org}"
-	local ext_ip=""
-	ext_ip="$(curl -s --max-time 5 --retry 0 "$check_url" 2>/dev/null | tr -d '[:space:]')"
+	local socks_proxy="socks5h://127.0.0.1:${CONN_CHECK_PORT:-1070}"
+	local ext_ip="" curl_rc=0
+	ext_ip="$(curl -s --max-time 5 --retry 0 -x "$socks_proxy" "$check_url" 2>/dev/null | tr -d '[:space:]')"
+	curl_rc=$?
 
 	LAST_PROXY_CHECK_TS="$now"
 
 	# Validate: must look like an IP address
 	case "$ext_ip" in
 	*[!0-9.:]*)
-		# Non-IP response or empty — treat as bad response (not a real direct).
-		# Keep STATE=direct for backward-compat with status.json consumers,
-		# but record a distinct reason so history is unambiguous.
-		PROXY_CHECK_STATE="direct"
+		# Non-IP response or empty — treat as proxy_down so it's classified as
+		# a drop (killswitch fired), NOT direct (leak). We cannot be direct here
+		# anyway because we forced traffic through the SOCKS5 proxy.
+		PROXY_CHECK_STATE="proxy_down"
 		PROXY_CHECK_IP=""
 		PROXY_CHECK_NODE_LABEL=""
-		pc_reason="bad_response from ${check_url}: '${ext_ip}'"
-		log "proxy_check: unexpected response from $check_url: '$ext_ip'"
+		pc_reason="proxy_down: bad_response from ${check_url} via ${socks_proxy}: '${ext_ip}' (rc=${curl_rc})"
+		log "proxy_check: ${pc_reason}"
 		_record_proxy_check_event "$PROXY_CHECK_STATE" "" "" "$pc_reason"
 		return 0
 		;;
 	esac
 
 	if [ -z "$ext_ip" ]; then
-		PROXY_CHECK_STATE="direct"
+		PROXY_CHECK_STATE="proxy_down"
 		PROXY_CHECK_IP=""
 		PROXY_CHECK_NODE_LABEL=""
-		pc_reason="no_response from ${check_url} (curl failed or timed out)"
-		log "proxy_check: no response from $check_url (curl failed or timed out)"
+		pc_reason="proxy_down: no response via ${socks_proxy} (curl failed or timed out, rc=${curl_rc})"
+		log "proxy_check: ${pc_reason}"
 		_record_proxy_check_event "$PROXY_CHECK_STATE" "" "" "$pc_reason"
 		return 0
 	fi

@@ -212,6 +212,7 @@
 		if (!pw)                                return ['No node configured',                    'neutral'];
 		if (st === 'blackhole')                 return ['\u{1F534} Blocked (killswitch active)', 'danger'];
 		if (st === 'proxy_no_204')              return ['\u{1F534} Proxy unreachable',           'danger'];
+		if (st === 'proxy_down')                return ['\u{1F534} Proxy engine not running',    'danger'];
 		if (st === 'direct') {
 			if (fb === 'direct')               return ['\u26A0\uFE0F Leaking direct (by design)', 'warn'];
 			return ['\u{1F534} Leaking direct', 'danger'];
