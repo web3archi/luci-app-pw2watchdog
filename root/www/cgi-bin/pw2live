@@ -23,12 +23,20 @@ PROBE_TIMEOUT='3'
 STATUS_FILE='/var/run/pw2watchdog/status.json'
 PW2_CONFIG='passwall2'
 
-# Optional: allow override via UCI if user changed proxy_check_url / port.
+# Engine binary names that pw2watchdog already recognises (see
+# pw2watchdog.sh resolve_proxy_listener / 'xray|sing-box|v2ray' patterns).
+# Do NOT hardcode any further — if user runs a custom engine, they can
+# override via UCI: pw2watchdog.advanced.proxy_engine_bin
+ENGINE_NAMES_DEFAULT='xray sing-box v2ray'
+
+# Optional overrides from UCI (URL, SOCKS port, engine binary name).
 if [ -f /etc/config/pw2watchdog ]; then
 	cfg_url="$(uci -q get pw2watchdog.advanced.proxy_check_url 2>/dev/null)"
 	[ -n "$cfg_url" ] && PROBE_URL="$cfg_url"
-	cfg_port="$(uci -q get pw2watchdog.connectivity.port 2>/dev/null)"
+	cfg_port="$(uci -q get pw2watchdog.advanced.socks_port 2>/dev/null)"
 	[ -n "$cfg_port" ] && PROBE_PORT="$cfg_port"
+	cfg_bin="$(uci -q get pw2watchdog.advanced.proxy_engine_bin 2>/dev/null)"
+	[ -n "$cfg_bin" ] && ENGINE_NAMES_DEFAULT="$cfg_bin"
 fi
 
 printf 'Content-Type: application/json; charset=utf-8\r\n'
@@ -71,15 +79,27 @@ case "$ext_ip" in
 esac
 
 if [ -z "$ext_ip" ]; then
-	# Diagnose why: xray dead? port closed? timeout?
+	# Diagnose why: engine dead? port closed? timeout?
+	# Detection uses the same approach as pw2watchdog.sh: 'pgrep -f /<name>'.
+	# busybox 'pgrep -x' is unreliable on ramips (matches /proc/PID/comm via
+	# regex, falls back to rc=1 even when comm is correct) — we found this
+	# the hard way. 'pgrep -f' matches cmdline and is consistent across
+	# busybox / coreutils.
 	reason="no_response"
-	xray_alive=0
-	pgrep -x xray >/dev/null 2>&1 && xray_alive=1
+	engine_alive=0
+	engine_bin=""
+	for name in $ENGINE_NAMES_DEFAULT; do
+		if pgrep -f "/${name}" >/dev/null 2>&1; then
+			engine_alive=1
+			engine_bin="$name"
+			break
+		fi
+	done
 	port_listen=0
 	netstat -tln 2>/dev/null | grep -q ":${PROBE_PORT} " && port_listen=1
 
-	if [ "$xray_alive" -eq 0 ]; then
-		reason="xray_not_running"
+	if [ "$engine_alive" -eq 0 ]; then
+		reason="engine_not_running"
 	elif [ "$port_listen" -eq 0 ]; then
 		reason="socks_port_closed"
 	elif [ "$curl_rc" -eq 28 ]; then
@@ -88,8 +108,11 @@ if [ -z "$ext_ip" ]; then
 		reason="curl_rc_${curl_rc}"
 	fi
 
-	printf '{"ok":0,"state":"down","reason":"%s","xray_alive":%d,"port_listen":%d,"elapsed_ms":%d,"ts":%d}\n' \
-		"$reason" "$xray_alive" "$port_listen" "$elapsed_ms" "$now_s"
+	# JSON-escape engine_bin (safe chars only, but follow the same rules).
+	esc_engine="$(printf '%s' "$engine_bin" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+
+	printf '{"ok":0,"state":"down","reason":"%s","engine_alive":%d,"engine_bin":"%s","port_listen":%d,"elapsed_ms":%d,"ts":%d}\n' \
+		"$reason" "$engine_alive" "$esc_engine" "$port_listen" "$elapsed_ms" "$now_s"
 	exit 0
 fi
 
