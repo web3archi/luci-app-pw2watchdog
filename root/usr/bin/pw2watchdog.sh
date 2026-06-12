@@ -689,9 +689,9 @@ write_status() {
 	_PW2WD_PW_ENABLED="$(uci -q get "${PASSWALL_CONFIG:-passwall2}.@global[0].enabled" 2>/dev/null)"
 	[ "$_PW2WD_PW_ENABLED" = "1" ] && _PW2WD_PW_RUNNING="true"
 
-	# passwall_alive: xray process actually running.
+	# passwall_alive: traffic xray actually running (C10: precise detection).
 	_PW2WD_XRAY_ALIVE="false"
-	pgrep -f '/xray' >/dev/null 2>&1 && _PW2WD_XRAY_ALIVE="true"
+	_engine_alive && _PW2WD_XRAY_ALIVE="true"
 
 	# Health counters: read BEFORE json_init (json_load_file conflicts with init).
 	_PW2WD_HC_DROPS=0
@@ -700,6 +700,8 @@ write_status() {
 	_PW2WD_HC_LEAK_TS=0
 	_PW2WD_HC_TRANSITS=0
 	_PW2WD_HC_TRANSIT_TS=0
+	_PW2WD_HC_CHAIN_EMPTY=0
+	_PW2WD_HC_CHAIN_EMPTY_TS=0
 	if [ -f "$STATE_DIR/health_counters.json" ]; then
 		json_load_file "$STATE_DIR/health_counters.json" 2>/dev/null
 		json_get_var _PW2WD_HC_DROPS drops 2>/dev/null
@@ -708,14 +710,18 @@ write_status() {
 		json_get_var _PW2WD_HC_LEAK_TS last_leak_ts 2>/dev/null
 		json_get_var _PW2WD_HC_TRANSITS transits 2>/dev/null
 		json_get_var _PW2WD_HC_TRANSIT_TS last_transit_ts 2>/dev/null
+		json_get_var _PW2WD_HC_CHAIN_EMPTY chain_empty 2>/dev/null
+		json_get_var _PW2WD_HC_CHAIN_EMPTY_TS last_chain_empty_ts 2>/dev/null
 		json_cleanup 2>/dev/null
 	fi
-	case "$_PW2WD_HC_DROPS"       in ''|*[!0-9]*) _PW2WD_HC_DROPS=0 ;; esac
-	case "$_PW2WD_HC_DROP_TS"     in ''|*[!0-9]*) _PW2WD_HC_DROP_TS=0 ;; esac
-	case "$_PW2WD_HC_LEAKS"       in ''|*[!0-9]*) _PW2WD_HC_LEAKS=0 ;; esac
-	case "$_PW2WD_HC_LEAK_TS"     in ''|*[!0-9]*) _PW2WD_HC_LEAK_TS=0 ;; esac
-	case "$_PW2WD_HC_TRANSITS"    in ''|*[!0-9]*) _PW2WD_HC_TRANSITS=0 ;; esac
-	case "$_PW2WD_HC_TRANSIT_TS"  in ''|*[!0-9]*) _PW2WD_HC_TRANSIT_TS=0 ;; esac
+	case "$_PW2WD_HC_DROPS"          in ''|*[!0-9]*) _PW2WD_HC_DROPS=0 ;; esac
+	case "$_PW2WD_HC_DROP_TS"        in ''|*[!0-9]*) _PW2WD_HC_DROP_TS=0 ;; esac
+	case "$_PW2WD_HC_LEAKS"          in ''|*[!0-9]*) _PW2WD_HC_LEAKS=0 ;; esac
+	case "$_PW2WD_HC_LEAK_TS"        in ''|*[!0-9]*) _PW2WD_HC_LEAK_TS=0 ;; esac
+	case "$_PW2WD_HC_TRANSITS"       in ''|*[!0-9]*) _PW2WD_HC_TRANSITS=0 ;; esac
+	case "$_PW2WD_HC_TRANSIT_TS"     in ''|*[!0-9]*) _PW2WD_HC_TRANSIT_TS=0 ;; esac
+	case "$_PW2WD_HC_CHAIN_EMPTY"    in ''|*[!0-9]*) _PW2WD_HC_CHAIN_EMPTY=0 ;; esac
+	case "$_PW2WD_HC_CHAIN_EMPTY_TS" in ''|*[!0-9]*) _PW2WD_HC_CHAIN_EMPTY_TS=0 ;; esac
 
 	# ----- Now the pure json block: only ${vars}, no $(...) calls -----
 	json_init
@@ -758,6 +764,8 @@ write_status() {
 	json_add_int health_last_leak_ts      "$_PW2WD_HC_LEAK_TS"
 	json_add_int health_transits          "$_PW2WD_HC_TRANSITS"
 	json_add_int health_last_transit_ts   "$_PW2WD_HC_TRANSIT_TS"
+	json_add_int health_chain_empty       "$_PW2WD_HC_CHAIN_EMPTY"
+	json_add_int health_last_chain_empty_ts "$_PW2WD_HC_CHAIN_EMPTY_TS"
 	json_add_int    last_scan_ts          "${LAST_SCAN_TS:-0}"
 	json_add_int    last_pw2_restart      "${LAST_PW2_RESTART:-0}"
 	json_add_string proxy_check_enabled   "${PROXY_CHECK_ENABLED:-0}"
@@ -1393,36 +1401,199 @@ should_switch() {
 }
 
 # ---------------------------------------------------------------------------
+# C10: Engine binary detection (no hardcoded paths).
+#
+# Cascade of sources, most authoritative first:
+#   1. UCI override          pw2watchdog.advanced.engine_bin_path  (user-set)
+#   2. PW2 own config        passwall2.@global_app[0].xray_file
+#   3. Live process          readlink /proc/<pid>/exe for pidof xray
+#   4. PW2 runtime symlink   /tmp/etc/passwall2/bin/<engine>
+#   5. Alt engines           v2ray, sing-box (same chain via pidof)
+#
+# Echoes detected path on stdout, returns 0 on success, 1 if nothing found.
+# Path is the real executable (readlink resolves symlinks).
+# ---------------------------------------------------------------------------
+_detect_engine_bin() {
+	local cand exe pid
+
+	# 1) Manual override from settings UI
+	cand="$(uci -q get pw2watchdog.advanced.engine_bin_path 2>/dev/null)"
+	if [ -n "$cand" ] && [ -x "$cand" ]; then
+		echo "$cand"
+		return 0
+	fi
+
+	# 2) PassWall2's own configured engine path
+	cand="$(uci -q get passwall2.@global_app[0].xray_file 2>/dev/null)"
+	if [ -n "$cand" ] && [ -x "$cand" ]; then
+		echo "$cand"
+		return 0
+	fi
+
+	# 3) Via live xray PID
+	pid="$(pidof xray 2>/dev/null | awk '{print $1}')"
+	if [ -n "$pid" ]; then
+		exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+		if [ -n "$exe" ] && [ -x "$exe" ]; then
+			echo "$exe"
+			return 0
+		fi
+	fi
+
+	# 4) PW2 runtime symlink (resolves to real bin)
+	for cand in /tmp/etc/passwall2/bin/xray /tmp/etc/passwall2/bin/v2ray /tmp/etc/passwall2/bin/sing-box; do
+		[ -L "$cand" ] || continue
+		exe="$(readlink -f "$cand" 2>/dev/null)"
+		if [ -n "$exe" ] && [ -x "$exe" ]; then
+			echo "$exe"
+			return 0
+		fi
+	done
+
+	# 5) Alt engines via pidof
+	for alt in v2ray sing-box; do
+		pid="$(pidof "$alt" 2>/dev/null | awk '{print $1}')"
+		[ -n "$pid" ] || continue
+		exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+		if [ -n "$exe" ] && [ -x "$exe" ]; then
+			echo "$exe"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+# ---------------------------------------------------------------------------
+# C10: _engine_alive — is the *traffic* xray running?
+#
+# PW2 runs TWO xray instances: one for direct_dns.json (DNS), one for
+# acl/default/global.json (traffic). For health-check purposes only the
+# traffic one matters — direct_dns dying is bad but does NOT cause WAN leak.
+#
+# We identify the traffic instance by its cmdline containing 'global.json'.
+# This pattern is read from PW2's own runtime files, not hardcoded — PW2
+# always writes the global config to acl/default/global.json (canonical name).
+# ---------------------------------------------------------------------------
+_engine_alive() {
+	local pid cmdline
+	for pid in $(pidof xray 2>/dev/null) $(pidof v2ray 2>/dev/null) $(pidof sing-box 2>/dev/null); do
+		[ -n "$pid" ] || continue
+		cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+		case "$cmdline" in
+			*global.json*) return 0 ;;
+		esac
+	done
+	return 1
+}
+
+# ---------------------------------------------------------------------------
+# C10: _check_pw2_chain_empty — detect PSW2_MANGLE having zero rules.
+#
+# Symptom of a PW2 internal rebuild (rotate, subscription refresh, internal
+# xray restart by PW2's own watchdog). During rebuild the chain is empty —
+# meaning ALL LAN traffic flows straight to WAN through fw4 without proxy
+# redirection. This is the true source of the WAN-leak window we observed.
+#
+# Increments health_chain_empty counter and writes a critical log entry.
+# Returns 0 if chain is healthy (>0 rules), 1 if empty (leak window).
+# ---------------------------------------------------------------------------
+_check_pw2_chain_empty() {
+	local rules counters_file empty_count empty_ts now
+	rules="$(nft list chain inet passwall2 PSW2_MANGLE 2>/dev/null | grep -c '# handle')"
+	case "$rules" in ''|*[!0-9]*) rules=0 ;; esac
+
+	if [ "$rules" -gt 0 ]; then
+		return 0
+	fi
+
+	# Chain empty — increment counter and log
+	counters_file="$STATE_DIR/health_counters.json"
+	empty_count=0; empty_ts=0
+
+	if [ -f "$counters_file" ]; then
+		json_load_file "$counters_file" 2>/dev/null
+		json_get_var empty_count chain_empty 2>/dev/null
+		json_get_var empty_ts last_chain_empty_ts 2>/dev/null
+		json_cleanup 2>/dev/null
+	fi
+	case "$empty_count" in ''|*[!0-9]*) empty_count=0 ;; esac
+	case "$empty_ts"    in ''|*[!0-9]*) empty_ts=0 ;; esac
+
+	now="$(date +%s)"
+	# Debounce: only count one event per ≥30 s window to avoid double-count
+	# on consecutive run_once cycles seeing the same rebuild.
+	if [ $((now - empty_ts)) -ge 30 ]; then
+		empty_count=$((empty_count + 1))
+		empty_ts="$now"
+		log "CRITICAL: PSW2_MANGLE chain empty — PW2 rebuilding (total=$empty_count, leak window in progress)"
+
+		# Persist updated counters (preserve other fields).
+		local drops last_drop_ts leaks last_leak_ts transits last_transit_ts
+		drops=0; last_drop_ts=0; leaks=0; last_leak_ts=0; transits=0; last_transit_ts=0
+		if [ -f "$counters_file" ]; then
+			json_load_file "$counters_file" 2>/dev/null
+			json_get_var drops drops 2>/dev/null
+			json_get_var last_drop_ts last_drop_ts 2>/dev/null
+			json_get_var leaks leaks 2>/dev/null
+			json_get_var last_leak_ts last_leak_ts 2>/dev/null
+			json_get_var transits transits 2>/dev/null
+			json_get_var last_transit_ts last_transit_ts 2>/dev/null
+			json_cleanup 2>/dev/null
+		fi
+		case "$drops"           in ''|*[!0-9]*) drops=0 ;; esac
+		case "$last_drop_ts"    in ''|*[!0-9]*) last_drop_ts=0 ;; esac
+		case "$leaks"           in ''|*[!0-9]*) leaks=0 ;; esac
+		case "$last_leak_ts"    in ''|*[!0-9]*) last_leak_ts=0 ;; esac
+		case "$transits"        in ''|*[!0-9]*) transits=0 ;; esac
+		case "$last_transit_ts" in ''|*[!0-9]*) last_transit_ts=0 ;; esac
+
+		json_init
+		json_add_int drops               "$drops"
+		json_add_int last_drop_ts        "$last_drop_ts"
+		json_add_int leaks               "$leaks"
+		json_add_int last_leak_ts        "$last_leak_ts"
+		json_add_int transits            "$transits"
+		json_add_int last_transit_ts     "$last_transit_ts"
+		json_add_int chain_empty         "$empty_count"
+		json_add_int last_chain_empty_ts "$empty_ts"
+		json_dump > "$counters_file"
+	fi
+	return 1
+}
+
+# ---------------------------------------------------------------------------
 # PassWall2 health check.
 #
-# Checks whether the PassWall2 daemon is alive by asking its init script for
-# status.  If it is not running and pw2_restart_on_failure=1 in UCI advanced
-# settings, the watchdog restarts PW2 once and records the timestamp.
+# Checks whether the PassWall2 *engine* (xray/v2ray/sing-box) is alive by
+# looking for its process. The traditional `init.d/passwall2 status` does NOT
+# exist as a valid action — busybox returns its help text with rc=0, making
+# the previous check a no-op (silently always 'alive').
 #
-# This is called at the top of every run_once cycle so that latency failures
-# caused by a dead PassWall2 are correctly attributed rather than blamed on
-# individual proxy nodes.
+# C10 fix: look for the traffic engine process (cmdline contains global.json).
+# If absent AND pw2_restart_on_failure=1 — restart PW2 with a clear warning
+# that this WILL cause ~90 s WAN-leak window (chain rebuild).
 # ---------------------------------------------------------------------------
 _check_passwall_health() {
 	# Guard: init script must be known and executable
 	[ -n "$PASSWALL_INIT" ] || return 0
 	[ -x "$PASSWALL_INIT" ]  || return 0
 
-	# Ask the init script if the service is running (exit 0 = running)
-	if "$PASSWALL_INIT" status >/dev/null 2>&1; then
-		return 0  # PW2 is alive, nothing to do
+	# C10: real engine health check via process detection
+	if _engine_alive; then
+		return 0  # traffic xray is running — all good
 	fi
 
-	# PW2 is not running
-	log "passwall2 health check: service not running (init=$PASSWALL_INIT)"
+	# Engine not running — log with detail
+	log "passwall2 health check: traffic engine not running (no xray with global.json cmdline)"
 
 	if [ "${PW2_RESTART_ON_FAILURE:-0}" != "1" ]; then
 		log "passwall2 health check: auto-restart disabled, skipping"
 		return 0
 	fi
 
-	# Restart PW2 and record the timestamp
-	log "passwall2 health check: restarting PassWall2 ..."
+	# Restart PW2 — but warn loudly that this rebuilds nft (~90s leak window)
+	log "WARNING: restarting PassWall2 — this WILL rebuild nft chains (~60-100s leak window expected)"
 	"$PASSWALL_INIT" restart >/dev/null 2>&1
 	local rc=$?
 	LAST_PW2_RESTART="$(date +%s)"
@@ -1475,11 +1646,12 @@ run_once() {
 
 	# ---------------------------------------------------------------------------
 	# PassWall2 health check.
-	# Verify that PassWall2 init script is running before we do any latency work.
-	# If PW2 is dead and pw2_restart_on_failure=1 — restart it once and record the
-	# timestamp. This prevents the watchdog from blaming proxies for a dead PW2.
+	# Verify the PW2 traffic engine is running, and detect PSW2_MANGLE chain
+	# emptiness (PW2 internal rebuild = true WAN-leak window source).
+	# C10: init.d/passwall2 has no 'status' verb — we use process detection.
 	# ---------------------------------------------------------------------------
 	_check_passwall_health
+	_check_pw2_chain_empty
 
 	current="$(get_default_node)"
 	[ -n "$current" ] || {

@@ -80,20 +80,24 @@ esac
 
 if [ -z "$ext_ip" ]; then
 	# Diagnose why: engine dead? port closed? timeout?
-	# Detection uses the same approach as pw2watchdog.sh: 'pgrep -f /<name>'.
-	# busybox 'pgrep -x' is unreliable on ramips (matches /proc/PID/comm via
-	# regex, falls back to rc=1 even when comm is correct) — we found this
-	# the hard way. 'pgrep -f' matches cmdline and is consistent across
-	# busybox / coreutils.
+	#
+	# C10: precise engine detection. PW2 runs TWO xray instances; for traffic
+	# health we look specifically for the one with 'global.json' in its cmdline.
+	# A direct_dns.json instance does NOT make the proxy work — it only serves DNS.
 	reason="no_response"
 	engine_alive=0
 	engine_bin=""
 	for name in $ENGINE_NAMES_DEFAULT; do
-		if pgrep -f "/${name}" >/dev/null 2>&1; then
-			engine_alive=1
-			engine_bin="$name"
-			break
-		fi
+		for pid in $(pidof "$name" 2>/dev/null); do
+			[ -n "$pid" ] || continue
+			cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+			case "$cmdline" in
+				*global.json*)
+					engine_alive=1
+					engine_bin="$name"
+					break 2 ;;
+			esac
+		done
 	done
 	port_listen=0
 	netstat -tln 2>/dev/null | grep -q ":${PROBE_PORT} " && port_listen=1

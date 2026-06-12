@@ -354,6 +354,15 @@ return view.extend({
 		o.rmempty     = true;
 		o.description = _('Path to the PassWall2 init script. Leave blank for auto-detect.');
 
+		/* C10: engine binary override.
+		 * Auto-detection cascade: UCI override → passwall2.@global_app[0].xray_file
+		 * → readlink /proc/PID/exe of live xray → PW2 runtime symlink. Only fill
+		 * in if auto-detection picks the wrong binary on a custom setup. */
+		o = adv.option(form.Value, 'engine_bin_path', _('Proxy engine binary path'));
+		o.placeholder = '/usr/bin/xray';
+		o.rmempty     = true;
+		o.description = _('Absolute path to the proxy engine binary (xray, v2ray, sing-box). Leave blank for auto-detect. Only override if auto-detection picks the wrong file on a custom install.');
+
 		o = adv.option(form.Value, 'test_script', _('PassWall2 test script'));
 		o.placeholder = '/usr/share/passwall2/test.sh';
 		o.rmempty     = true;
