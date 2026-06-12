@@ -1488,20 +1488,42 @@ _engine_alive() {
 }
 
 # ---------------------------------------------------------------------------
-# C10: _check_pw2_chain_empty — detect PSW2_MANGLE having zero rules.
+# C10/C10b: _check_pw2_chain_empty — detect PSW2_MANGLE having zero rules.
 #
 # Symptom of a PW2 internal rebuild (rotate, subscription refresh, internal
 # xray restart by PW2's own watchdog). During rebuild the chain is empty —
 # meaning ALL LAN traffic flows straight to WAN through fw4 without proxy
 # redirection. This is the true source of the WAN-leak window we observed.
 #
-# Increments health_chain_empty counter and writes a critical log entry.
-# Returns 0 if chain is healthy (>0 rules), 1 if empty (leak window).
+# C10b: counting rules — `nft list chain` (without -a) DOES NOT emit `# handle`
+# markers; that token only appears with `nft -a`. The previous detector
+# counted '# handle' on plain `nft list chain` output and always got 0 even
+# when the chain had 16 active rules — producing constant false positives.
+#
+# New strategy:
+#   primary  : `nft -a list chain ...` and count `# handle` (clean semantic)
+#   fallback : `nft list chain ...` and count lines containing action tokens
+#              (counter/tproxy/jump/return) — used if `nft -a` is unavailable
+#
+# Increments health_chain_empty counter and writes an INFO log entry.
+# Returns 0 if chain is healthy (>0 rules), 1 if truly empty.
 # ---------------------------------------------------------------------------
 _check_pw2_chain_empty() {
-	local rules counters_file empty_count empty_ts now
-	rules="$(nft list chain inet passwall2 PSW2_MANGLE 2>/dev/null | grep -c '# handle')"
+	local rules rules_fb counters_file empty_count empty_ts now
+
+	# Primary: count handles via `nft -a` (authoritative).
+	rules="$(nft -a list chain inet passwall2 PSW2_MANGLE 2>/dev/null | grep -c '# handle')"
 	case "$rules" in ''|*[!0-9]*) rules=0 ;; esac
+
+	# Fallback: if `nft -a` returned 0, double-check with action-token regex
+	# (catches the case where -a flag is missing/broken on this nft build).
+	if [ "$rules" -eq 0 ]; then
+		rules_fb="$(nft list chain inet passwall2 PSW2_MANGLE 2>/dev/null | grep -cE '(counter|tproxy|jump|return)\b')"
+		case "$rules_fb" in ''|*[!0-9]*) rules_fb=0 ;; esac
+		if [ "$rules_fb" -gt 0 ]; then
+			rules="$rules_fb"
+		fi
+	fi
 
 	if [ "$rules" -gt 0 ]; then
 		return 0
@@ -1526,7 +1548,7 @@ _check_pw2_chain_empty() {
 	if [ $((now - empty_ts)) -ge 30 ]; then
 		empty_count=$((empty_count + 1))
 		empty_ts="$now"
-		log "CRITICAL: PSW2_MANGLE chain empty — PW2 rebuilding (total=$empty_count, leak window in progress)"
+		log "info: PSW2_MANGLE chain temporarily empty — PW2 rebuilding (total=$empty_count)"
 
 		# Persist updated counters (preserve other fields).
 		local drops last_drop_ts leaks last_leak_ts transits last_transit_ts
