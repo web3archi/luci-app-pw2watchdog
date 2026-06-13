@@ -2137,7 +2137,20 @@ daemon_loop() {
 	while true; do
 		run_once
 		load_cfg
-		sleep "$CHECK_INTERVAL"
+		# C11.1: fast killswitch convergence loop — ks_apply every KS_FAST_INTERVAL
+		# seconds during the long sleep. This catches PW2 mangle rebuild events
+		# (rotate, subscription refresh, internal restart) within ~10 sec instead
+		# of waiting for the next full run_once (CHECK_INTERVAL=180s default).
+		# The fast loop only calls ks_apply — no proxy checks, no scanner, no I/O.
+		local ks_interval="${KS_FAST_INTERVAL:-10}"
+		local slept=0
+		while [ "$slept" -lt "$CHECK_INTERVAL" ]; do
+			sleep "$ks_interval"
+			slept=$((slept + ks_interval))
+			if command -v ks_apply >/dev/null 2>&1; then
+				ks_apply 2>/dev/null
+			fi
+		done
 	done
 }
 
