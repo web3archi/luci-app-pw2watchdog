@@ -261,12 +261,43 @@ ks_disarm() {
 }
 
 # ---------------------------------------------------------------------------
+# C11.1: PW2 mangle health check — second arm trigger.
+#
+# During rotate / subscription refresh / internal PW2 restart, the entire
+# `inet passwall2` table is rebuilt. In that window xray stays alive BUT
+# the PSW2_MANGLE chain is empty (0 rules) — traffic flows straight to WAN
+# bypassing tproxy. This is the leak source we observed at 11:12 UTC
+# (60-90s window, real WAN IP exposed).
+#
+# Solution: arm killswitch ALSO when PSW2_MANGLE has fewer rules than
+# `min_pw2_rules` threshold (default 5). xray-alive check stays, but is
+# now an OR with this signal.
+# ---------------------------------------------------------------------------
+_ks_pw2_mangle_healthy() {
+	local min_rules count
+	min_rules="$(uci -q get pw2watchdog.killswitch.min_pw2_rules 2>/dev/null)"
+	min_rules="${min_rules:-5}"
+
+	# C10b detector: use `nft -a` to get handle markers (plain `nft list`
+	# does not emit them). Fall back to rule-content regex if -a fails.
+	count="$(nft -a list chain inet passwall2 PSW2_MANGLE 2>/dev/null \
+		| grep -c '# handle')"
+	if [ "$count" -eq 0 ]; then
+		count="$(nft list chain inet passwall2 PSW2_MANGLE 2>/dev/null \
+			| grep -cE '(counter|tproxy|jump|return)\b')"
+	fi
+
+	[ "$count" -ge "$min_rules" ]
+}
+
+# ---------------------------------------------------------------------------
 # Convergence: bring table state in line with policy + current proxy state.
 # Call this once per main-loop iteration.
 # Args: $1 = xray_alive ("true"/"false") — optional hint to avoid re-probing
 # ---------------------------------------------------------------------------
 ks_apply() {
 	local xray_alive="${1:-}"
+	local pw2_healthy=1   # 1=healthy, 0=broken
 	ks_should_arm
 	local policy=$?
 
@@ -283,14 +314,11 @@ ks_apply() {
 			return 0
 			;;
 		0)
-			# Policy says arm — but only if xray is actually dead.
-			# If xray is alive, keep table loaded but disarmed (warm standby).
+			# Policy says arm — evaluate BOTH triggers.
 			if [ -z "$xray_alive" ]; then
-				# Caller didn't tell us — probe via _engine_alive if available
 				if command -v _engine_alive >/dev/null 2>&1; then
 					if _engine_alive; then xray_alive=true; else xray_alive=false; fi
 				else
-					# Fallback: pgrep xray
 					if pgrep -f xray >/dev/null 2>&1; then
 						xray_alive=true
 					else
@@ -299,12 +327,28 @@ ks_apply() {
 				fi
 			fi
 
-			if [ "$xray_alive" = "true" ]; then
-				# Warm standby: table loaded, but no DROP
+			# C11.1: second trigger — PW2 mangle health
+			if _ks_pw2_mangle_healthy; then
+				pw2_healthy=1
+			else
+				pw2_healthy=0
+			fi
+
+			# Save reason for status reporting
+			if [ "$xray_alive" = "true" ] && [ "$pw2_healthy" = "1" ]; then
+				# Everything OK → standby
 				_ks_table_exists || ks_ensure_table
 				ks_disarm
+				KS_LAST_REASON=""
 			else
-				# Engine dead → ARM!
+				# Either xray dead OR PW2 mangle broken → ARM
+				if [ "$xray_alive" = "false" ] && [ "$pw2_healthy" = "0" ]; then
+					KS_LAST_REASON="xray_dead+pw2_broken"
+				elif [ "$xray_alive" = "false" ]; then
+					KS_LAST_REASON="xray_dead"
+				else
+					KS_LAST_REASON="pw2_mangle_broken"
+				fi
 				ks_arm
 			fi
 			return 0
@@ -316,7 +360,7 @@ ks_apply() {
 # Export state for write_status
 # ---------------------------------------------------------------------------
 ks_status_vars() {
-	# Sets KS_ENABLED, KS_AUTO, KS_STATE, KS_TABLE_PRESENT, KS_VPS_COUNT
+	# Sets KS_ENABLED, KS_AUTO, KS_STATE, KS_TABLE_PRESENT, KS_VPS_COUNT, KS_LAST_REASON
 	KS_ENABLED="$(uci -q get pw2watchdog.killswitch.enabled 2>/dev/null)"
 	KS_ENABLED="${KS_ENABLED:-0}"
 	KS_AUTO="$(uci -q get pw2watchdog.killswitch.auto 2>/dev/null)"
@@ -333,6 +377,8 @@ ks_status_vars() {
 		KS_STATE="disabled"
 	fi
 	KS_VPS_COUNT="$(_ks_vps_ips | wc -l)"
+	# KS_LAST_REASON is set by ks_apply when armed; keep it across status reads.
+	KS_LAST_REASON="${KS_LAST_REASON:-}"
 }
 
 # ---------------------------------------------------------------------------
@@ -348,7 +394,7 @@ case "${0##*/}" in
 			rebuild) ks_drop_table; ks_ensure_table ;;
 			status)
 				ks_status_vars
-				echo "enabled=$KS_ENABLED auto=$KS_AUTO state=$KS_STATE table_present=$KS_TABLE_PRESENT vps_whitelist=$KS_VPS_COUNT"
+				echo "enabled=$KS_ENABLED auto=$KS_AUTO state=$KS_STATE table_present=$KS_TABLE_PRESENT vps_whitelist=$KS_VPS_COUNT last_reason=${KS_LAST_REASON:-none}"
 				;;
 			*)
 				echo "Usage: $0 {arm|disarm|drop|apply|rebuild|status}"

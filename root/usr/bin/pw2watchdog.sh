@@ -777,6 +777,7 @@ write_status() {
 	json_add_string killswitch_auto       "${KS_AUTO:-1}"
 	json_add_string killswitch_state      "${KS_STATE:-unavailable}"
 	json_add_int    killswitch_vps_count  "${KS_VPS_COUNT:-0}"
+	json_add_string killswitch_last_reason "${KS_LAST_REASON:-}"
 	json_add_int health_drops             "$_PW2WD_HC_DROPS"
 	json_add_int health_last_drop_ts      "$_PW2WD_HC_DROP_TS"
 	json_add_int health_leaks             "$_PW2WD_HC_LEAKS"
