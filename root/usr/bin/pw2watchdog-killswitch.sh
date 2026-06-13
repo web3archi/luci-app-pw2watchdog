@@ -252,7 +252,7 @@ ks_disarm() {
 	_ks_table_exists || return 0
 	local handles h
 	handles="$(nft -a list chain $KS_TABLE $KS_CHAIN 2>/dev/null \
-		| awk '/pw2wd_ks_drop.*handle/{gsub(/.*handle[[:space:]]*/,\"\"); print $1}')"
+		| awk '/pw2wd_ks_drop.*handle/{gsub(/.*handle[[:space:]]*/,""); print $1}')"
 	for h in $handles; do
 		nft delete rule $KS_TABLE $KS_CHAIN handle "$h" 2>/dev/null
 	done
