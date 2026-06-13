@@ -21,6 +21,10 @@
 . /lib/functions.sh
 . /usr/share/libubox/jshn.sh
 
+# C11: Independent killswitch module (sourced — defines ks_* functions).
+# Safe to fail silently on old installs without the file.
+[ -f /usr/bin/pw2watchdog-killswitch.sh ] && . /usr/bin/pw2watchdog-killswitch.sh
+
 CONFIG_NAME="pw2watchdog"
 STATE_DIR="/var/run/pw2watchdog"
 ENV_FILE="$STATE_DIR/env.static"
@@ -693,6 +697,17 @@ write_status() {
 	_PW2WD_XRAY_ALIVE="false"
 	_engine_alive && _PW2WD_XRAY_ALIVE="true"
 
+	# C11: Independent killswitch convergence — sync KS state every cycle.
+	# This is the only place where killswitch policy is enforced from the
+	# main loop. ks_apply() handles disabled/standby/armed transitions.
+	if command -v ks_apply >/dev/null 2>&1; then
+		ks_apply "$_PW2WD_XRAY_ALIVE" 2>/dev/null
+		ks_status_vars
+	else
+		KS_ENABLED=0; KS_AUTO=1; KS_STATE="unavailable"
+		KS_TABLE_PRESENT=0; KS_VPS_COUNT=0
+	fi
+
 	# Health counters: read BEFORE json_init (json_load_file conflicts with init).
 	_PW2WD_HC_DROPS=0
 	_PW2WD_HC_DROP_TS=0
@@ -758,6 +773,10 @@ write_status() {
 	json_add_string running               "${STATUS_RUNNING:-false}"
 	json_add_string passwall_running      "${_PW2WD_PW_RUNNING:-false}"
 	json_add_string passwall_alive        "${_PW2WD_XRAY_ALIVE:-false}"
+	json_add_string killswitch_enabled    "${KS_ENABLED:-0}"
+	json_add_string killswitch_auto       "${KS_AUTO:-1}"
+	json_add_string killswitch_state      "${KS_STATE:-unavailable}"
+	json_add_int    killswitch_vps_count  "${KS_VPS_COUNT:-0}"
 	json_add_int health_drops             "$_PW2WD_HC_DROPS"
 	json_add_int health_last_drop_ts      "$_PW2WD_HC_DROP_TS"
 	json_add_int health_leaks             "$_PW2WD_HC_LEAKS"
@@ -2287,6 +2306,25 @@ cmd_transit_around() {
 case "$1" in
 run)    run_once    ;;
 daemon) daemon_loop ;;
+killswitch)
+	shift
+	if command -v ks_apply >/dev/null 2>&1; then
+		case "$1" in
+			arm)     ks_apply false ;;
+			disarm)  ks_disarm ;;
+			drop)    ks_drop_table ;;
+			apply)   ks_apply ;;
+			rebuild) ks_drop_table; ks_ensure_table ;;
+			status)
+				ks_status_vars
+				echo "enabled=$KS_ENABLED auto=$KS_AUTO state=$KS_STATE table_present=$KS_TABLE_PRESENT vps_whitelist=$KS_VPS_COUNT"
+				;;
+			*) echo "Usage: $0 killswitch {arm|disarm|drop|apply|rebuild|status}"; exit 1 ;;
+		esac
+	else
+		echo "killswitch module not loaded" >&2; exit 1
+	fi
+	;;
 stats)
 	load_env
 	load_cfg
@@ -2299,7 +2337,7 @@ transit-around)
 	cmd_transit_around "$@"
 	;;
 *)
-	echo "Usage: $0 {run|daemon|stats [N]|transit-around <cmd...>}"
+	echo "Usage: $0 {run|daemon|stats [N]|transit-around <cmd...>|killswitch <arm|disarm|drop|apply|rebuild|status>}"
 	exit 1
 	;;
 esac
